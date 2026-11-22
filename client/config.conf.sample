@@ -1,75 +1,19 @@
-# ============================================================================
-# MagicMirror Digital Photo Frame Configuration
-# ============================================================================
-# This file contains all user-configurable settings for the digital photo frame.
-# 
-# After changing this file, restart the service:
-#   sudo systemctl restart digitalframe.service
-#
-# To create your own config from this template:
-#   cp config.conf.sample config.conf
-#   nano config.conf  # Edit as needed
-# ============================================================================
+# Digital Photo Frame Client Configuration (Raspberry Pi 4)
+# Copy to config.conf and edit: cp config.conf.sample config.conf
 
-# === Display Schedule ===
-# When should the display turn on and off automatically?
-# Format: DAYRANGE=HH:MM-HH:MM (ON_TIME-OFF_TIME in 24-hour format)
-# 
-# Valid times: 00:00 to 23:59
-# Note: Midnight crossover NOT supported (e.g., 20:00-08:00 will not work)
-#
-# Examples:
-#   MONDAY_FRIDAY=06:00-22:30    # 6:00 AM to 10:30 PM on weekdays
-#   SATURDAY_SUNDAY=08:00-23:00  # 8:00 AM to 11:00 PM on weekends
-#   MONDAY_FRIDAY=09:00-17:00    # Standard 9-to-5 hours
-
-# Monday through Friday schedule (ON_TIME-OFF_TIME)
-MONDAY_FRIDAY=16:00-20:45
-
-# Saturday and Sunday schedule (ON_TIME-OFF_TIME)
-SATURDAY_SUNDAY=08:00-20:45
-
-# === Server Connection ===
-# MagicMirror server address (typically your NAS or server)
-# The Raspberry Pi client connects to this server to display the interface
-
+# Synology NAS MagicMirror URL (http://SERVER_IP:SERVER_PORT)
 SERVER_IP=192.168.4.45
 SERVER_PORT=8036
 
-# === Browser Viewer Backend ===
-# Default 'webkit' runs client/kiosk.py (~100-140MB RAM, no ~/MagicMirror needed).
-# Alternatives: 'chromium' (kiosk mode with 128MB V8 heap cap) or 'electron' (legacy).
-BROWSER_BACKEND=webkit
+# Active display schedule (24-hour HH:MM-HH:MM)
+MONDAY_FRIDAY=16:00-20:45
+SATURDAY_SUNDAY=08:00-20:45
 
-# === PIR Motion Sensor ===
-# Automatic display power management based on motion detection
-# The display turns ON when motion is detected and OFF after timeout
-
-# Minutes of inactivity before turning off display (default: 5)
+# PIR motion sensor (BCM GPIO pin & idle minutes before screen sleep)
+PIR_GPIO_PIN=24
 PIR_TIMEOUT_MINUTES=5
 
-# GPIO pin number for PIR sensor - BCM numbering (default: 24)
-# Only change if your PIR sensor is connected to a different GPIO pin
-PIR_GPIO_PIN=24
-
-# === Debug Mode ===
-# Enable detailed diagnostic logging for troubleshooting
-# 
-# WARNING: Debug mode generates 15-30 MB of logs per day!
-# With the default 64MB log limit, debug logs will fill space quickly.
-# Only enable when actively troubleshooting, then disable immediately.
-# 
-# Set to 'true' to enable, 'false' to disable (default: false)
+# Viewer backend: 'webkit' (~100-140MB RAM, default) or 'chromium'
+BROWSER_BACKEND=webkit
 
 DEBUG=false
-
-# ============================================================================
-# Notes:
-# - Format must be exact: KEY=VALUE with no spaces around the = sign
-# - Time format must be HH:MM (e.g., 08:00, 16:45, 23:30)
-# - Boolean values must be lowercase: true or false
-# - Comments start with # and are ignored
-# - After setup, this file is located at: ~/self-host-digital-photo-frame/client/config.conf
-# 
-# For more information, see README.md
-# ============================================================================

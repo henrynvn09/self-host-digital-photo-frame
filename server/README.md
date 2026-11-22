@@ -1,32 +1,29 @@
-# server (Synology NAS Stack)
+# server (Synology NAS)
 
-Single Synology Container Manager stack (`docker-compose.yml`) running two containers on a private internal Docker network (`photoframe_net`):
+Runs `photo-api` (pure-Go 2K photo indexer + 1 GB LRU cache, internal port `2283`) and `magicmirror` (port `8036`) on one private Docker network (~146 MiB total RAM).
 
-- **[`photo-api/`](./photo-api/README.md)** — Pure-Go + SQLite + offline worldwide GeoNames photo API (read-only NAS `Library`, lazy 2K JPEG `Preview`s, HEIC support, 1GB LRU cache, Immich-compatible REST subset; internal-only port `2283`).
-- **[`magicmirror/`](./magicmirror/README.md)** — Thin MagicMirror² image with commit-pinned modules (`MMM-ImmichSlideShow`, `MMM-Worldclock`, `MMM-OpenWeatherMapForecast`; exposed on host port `8036` for the Raspberry Pi `Frame Client`).
+## 3-Step Setup on Synology NAS
 
-## Synology Container Manager Setup
-
-1. **Find your DSM `PUID` and `PGID`** via SSH on your NAS:
-   ```bash
-   id <your-dsm-username>
-   # Example: uid=1026(henry) gid=100(users)
-   ```
-2. **Configure environment variables**:
+1. **Find your DSM user ID** via SSH (`id <username>`, usually `PUID=1026` and `PGID=100`) and create a writable data folder (for example `/volume1/docker/photoframe/data`).
+2. **Create `.env` and `magicmirror/config/config.js`**:
    ```bash
    cd server
-   cp .env.example .env
-   nano .env
+   cp .env.example .env && nano .env
+   cp magicmirror/config/config.js.example magicmirror/config/config.js && nano magicmirror/config/config.js
    ```
-   Set `PUID`, `PGID`, `PHOTOS_PATH` (mounted read-only `:ro`), `DATA_PATH` (writable folder owned by your DSM user), and `API_KEY`.
-3. **Configure MagicMirror** (secret-free template):
-   ```bash
-   cp magicmirror/config/config.js.example magicmirror/config/config.js
-   nano magicmirror/config/config.js
-   ```
-   Set `apiKey` to match `API_KEY` in `.env` and add your OpenWeatherMap API key.
-4. **Deploy both containers**:
+   Set `PHOTOS_PATH` (your Synology Photos path, mounted read-only `:ro`), `DATA_PATH`, and a matching `API_KEY` in both files.
+3. **Start the stack**:
    ```bash
    docker compose up -d --build
    ```
-5. **Point your Raspberry Pi `Frame Client`** (see [`../client/README.md`](../client/README.md)) to `http://<your-nas-ip>:8036`.
+
+Open `http://<nas-ip>:8036` in any browser (or point `client/config.conf` on the Raspberry Pi 4 to `<nas-ip>`).
+
+## Common Commands
+
+```bash
+docker compose ps                              # Check container health
+docker compose logs -f photo-api               # Watch photo scan progress
+docker compose exec photo-api curl -X POST -H "x-api-key: <API_KEY>" http://127.0.0.1:2283/api/admin/scan
+docker compose down                            # Stop stack
+```
