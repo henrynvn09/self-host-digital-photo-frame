@@ -53,29 +53,32 @@ flowchart LR
 Each top-level folder owns its own `README.md` setup guide:
 
 ```text
-photoframe/
-├── README.md                    # System overview, architecture, quick-start links
+self-host-digital-photo-frame/
+├── README.md                    # System overview & links to server/ and client/ guides
 ├── PRD.md                       # This document
 ├── AGENTS.md                    # Agent instructions & skills pointers
 ├── CONTEXT.md                   # Canonical domain glossary
-├── docker-compose.yml           # Single Synology Container Manager stack (magicmirror + photo-api)
-├── .env.example                 # DSM PUID/PGID, volume paths, API_KEY, 2K & cache settings
 ├── docs/
 │   ├── adr/                     # Architectural Decision Records (0001–0004)
 │   ├── agents/                  # Issue tracker, triage labels, domain doc rules
 │   └── specs/                   # Engineering specifications (/to-spec)
-├── photo-api/
-│   ├── README.md                # photo-api setup, env vars, endpoints, troubleshooting
-│   ├── Dockerfile               # Multi-stage pure Go + libheif-examples + GeoNames cities1000
-│   ├── go.mod
-│   └── ...                      # Go source & tests
-├── magicmirror/
-│   ├── README.md                # MagicMirror config, modules, secrets handling
-│   ├── Dockerfile               # Thin image extending karsten13/magicmirror with pinned modules
-│   ├── config/
-│   │   └── config.js.example    # Clean secret-free config targeting http://photo-api:2283
-│   └── css/
-│       └── custom.css
+├── server/
+│   ├── README.md                # Synology NAS Container Manager setup guide
+│   ├── docker-compose.yml       # Single stack running magicmirror + photo-api
+│   ├── .env.example             # DSM PUID/PGID, volume paths, API_KEY, 2K & cache settings
+│   ├── photo-api/
+│   │   ├── README.md            # photo-api env vars, endpoints, tests
+│   │   ├── Dockerfile           # Multi-stage pure Go + libheif-examples + GeoNames cities1000
+│   │   ├── go.mod
+│   │   ├── scripts/smoke-test.sh
+│   │   └── ...                  # Go source & tests
+│   └── magicmirror/
+│       ├── README.md            # MagicMirror config, modules, secrets handling
+│       ├── Dockerfile           # Thin pinned image extending karsten13/magicmirror
+│       ├── config/
+│       │   └── config.js.example
+│       └── css/
+│           └── custom.css
 └── client/
     ├── README.md                # Raspberry Pi 3B installation, PIR wiring, schedule, logs
     ├── setup_client.sh

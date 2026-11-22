@@ -1,8 +1,10 @@
 .env
+server/.env
 data/
-magicmirror/config/config.js
+server/data/
+server/magicmirror/config/config.js
 *.db
 *.db-shm
 *.db-wal
 .DS_Store
-photo-api/photo-api
+server/photo-api/photo-api
