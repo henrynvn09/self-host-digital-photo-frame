@@ -3,7 +3,8 @@
 FROM karsten13/magicmirror:v2.38.0
 
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /opt/magic_mirror/config && chown -R node:node /opt/magic_mirror/config
 
 USER node
 WORKDIR /opt/magic_mirror/modules
@@ -34,3 +35,6 @@ RUN git init MMM-OpenWeatherMapForecast \
     && npm install --omit=dev
 
 WORKDIR /opt/magic_mirror
+
+# Run MagicMirror in headless server-only mode (clients connect on port 8080/8036)
+CMD ["npm", "run", "server"]

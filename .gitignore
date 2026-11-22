@@ -2,6 +2,7 @@
 server/.env
 data/
 server/data/
+server/test-photos/
 server/magicmirror/config/config.js
 *.db
 *.db-shm

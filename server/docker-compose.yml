@@ -42,7 +42,7 @@ services:
       - TZ=${TZ:-America/Los_Angeles}
     volumes:
       - ./magicmirror/config/config.js:/opt/magic_mirror/config/config.js:ro
-      - ./magicmirror/css/custom.css:/opt/magic_mirror/css/custom.css:ro
+      - ./magicmirror/css/custom.css:/opt/magic_mirror/config/custom.css:ro
     ports:
       - "${MAGICMIRROR_PORT:-8036}:8080"
     networks:
