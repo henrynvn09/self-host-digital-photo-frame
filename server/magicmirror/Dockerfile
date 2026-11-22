@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 USER node
 WORKDIR /opt/magic_mirror/modules
 
-ARG IMMICH_SLIDESHOW_SHA=832a79c63b5efa61b009e2f39f6f664e7e398c2d
+ARG IMMICH_SLIDESHOW_SHA=955c2538ccdd5b9702119826edcda549db937f55
 ARG WORLDCLOCK_SHA=e6bfe734462fa13472e8728434294f4ec1a6c304
 ARG OPENWEATHER_SHA=e36d50f725695c3d8649a35acbaeeb1446c33bbc
 
