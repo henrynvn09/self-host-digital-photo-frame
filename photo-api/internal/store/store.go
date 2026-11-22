@@ -11,6 +11,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const assetColumns = `id, rel_path, mtime, size, taken_at, taken_year, taken_month, taken_day,
+       city, state, country, album, orientation, width, height, indexed_at`
+
 type Asset struct {
 	ID          string
 	RelPath     string
@@ -47,6 +50,20 @@ type SearchParams struct {
 type SearchResult struct {
 	Items []Asset
 	Total int
+}
+
+// NormalizePageSize clamps pagination parameters consistently across API and Store.
+func NormalizePageSize(page, size int) (int, int) {
+	if page <= 0 {
+		page = 1
+	}
+	if size <= 0 {
+		size = 250
+	}
+	if size > 1000 {
+		size = 1000
+	}
+	return page, size
 }
 
 type Store struct {
@@ -194,10 +211,7 @@ func (s *Store) DeleteByRelPaths(ctx context.Context, relPaths []string) error {
 }
 
 func (s *Store) GetAsset(ctx context.Context, id string) (*Asset, error) {
-	row := s.db.QueryRowContext(ctx, `
-SELECT id, rel_path, mtime, size, taken_at, taken_year, taken_month, taken_day,
-       city, state, country, album, orientation, width, height, indexed_at
-FROM assets WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT `+assetColumns+` FROM assets WHERE id = ?`, id)
 	a, err := scanAsset(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -216,17 +230,7 @@ func (s *Store) SearchMetadata(ctx context.Context, p SearchParams) (SearchResul
 		return SearchResult{}, err
 	}
 
-	size := p.Size
-	if size <= 0 {
-		size = 250
-	}
-	if size > 1000 {
-		size = 1000
-	}
-	page := p.Page
-	if page <= 0 {
-		page = 1
-	}
+	page, size := NormalizePageSize(p.Page, p.Size)
 	offset := (page - 1) * size
 
 	orderDir := "DESC"
@@ -234,13 +238,7 @@ func (s *Store) SearchMetadata(ctx context.Context, p SearchParams) (SearchResul
 		orderDir = "ASC"
 	}
 
-	q := fmt.Sprintf(`
-SELECT id, rel_path, mtime, size, taken_at, taken_year, taken_month, taken_day,
-       city, state, country, album, orientation, width, height, indexed_at
-FROM assets%s
-ORDER BY taken_at %s
-LIMIT ? OFFSET ?`, where, orderDir)
-
+	q := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY taken_at %s LIMIT ? OFFSET ?`, assetColumns, where, orderDir)
 	qArgs := append(append([]any{}, args...), size, offset)
 	rows, err := s.db.QueryContext(ctx, q, qArgs...)
 	if err != nil {
@@ -264,13 +262,7 @@ func (s *Store) SearchRandom(ctx context.Context, takenAfter, takenBefore *time.
 		size = 1000
 	}
 
-	q := fmt.Sprintf(`
-SELECT id, rel_path, mtime, size, taken_at, taken_year, taken_month, taken_day,
-       city, state, country, album, orientation, width, height, indexed_at
-FROM assets%s
-ORDER BY RANDOM()
-LIMIT ?`, where)
-
+	q := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY RANDOM() LIMIT ?`, assetColumns, where)
 	qArgs := append(append([]any{}, args...), size)
 	rows, err := s.db.QueryContext(ctx, q, qArgs...)
 	if err != nil {
@@ -281,13 +273,7 @@ LIMIT ?`, where)
 }
 
 func (s *Store) MemoriesForDate(ctx context.Context, month, day, currentYear int) ([]Asset, error) {
-	const q = `
-SELECT id, rel_path, mtime, size, taken_at, taken_year, taken_month, taken_day,
-       city, state, country, album, orientation, width, height, indexed_at
-FROM assets
-WHERE taken_month = ? AND taken_day = ? AND taken_year < ?
-ORDER BY taken_year DESC, taken_at ASC`
-
+	q := fmt.Sprintf(`SELECT %s FROM assets WHERE taken_month = ? AND taken_day = ? AND taken_year < ? ORDER BY taken_year DESC, taken_at ASC`, assetColumns)
 	rows, err := s.db.QueryContext(ctx, q, month, day, currentYear)
 	if err != nil {
 		return nil, err

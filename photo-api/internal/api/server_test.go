@@ -49,7 +49,12 @@ func setupTestEnv(t *testing.T, cacheMaxMB int64) *testEnv {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	cache, err := preview.NewCache(dataDir, 2560, 1440, 88, cacheMaxMB)
+	cache, err := preview.NewCache(dataDir, preview.Options{
+		MaxWidth:    2560,
+		MaxHeight:   1440,
+		JPEGQuality: 88,
+		MaxMB:       cacheMaxMB,
+	})
 	if err != nil {
 		t.Fatalf("new cache: %v", err)
 	}
@@ -114,6 +119,10 @@ func TestEndToEndPhotoAPI(t *testing.T) {
 	// - PNG without EXIF relying on filename date (2021-07-15)
 	writePNG(t, filepath.Join(env.photosDir, "2021", "IMG_20210715_090000.png"), 600, 400)
 
+	// - Synthetic HEIC with embedded EXIF DateTimeDigitized (CreateDate) + GPS in Ho Chi Minh City
+	writeSyntheticHEICWithCreateDate(t, filepath.Join(env.photosDir, "2020", "Phone Backup", "iphone.heic"),
+		"2020:07:15 08:15:00", 6, 10.8231, 106.6297)
+
 	// - Synology system folders, excluded folders, and non-image files (must all be skipped)
 	writePNG(t, filepath.Join(env.photosDir, "2023", "@eaDir", "thumb.png"), 100, 100)
 	writePNG(t, filepath.Join(env.photosDir, "#recycle", "deleted.png"), 100, 100)
@@ -131,17 +140,20 @@ func TestEndToEndPhotoAPI(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &stats); err != nil {
 		t.Fatalf("decode scan stats: %v", err)
 	}
-	if stats.Added != 3 || stats.Deleted != 0 {
-		t.Fatalf("expected 3 added, got %+v", stats)
+	if stats.Added != 4 || stats.Deleted != 0 {
+		t.Fatalf("expected 4 added, got %+v", stats)
+	}
+	if stats.DurationMs < 0 || stats.DurationMs > 30000 {
+		t.Fatalf("expected durationMs in milliseconds, got %d", stats.DurationMs)
 	}
 
-	// Re-scanning unchanged library must skip all 3
+	// Re-scanning unchanged library must skip all 4
 	rec = env.doJSON(t, "POST", "/api/admin/scan", nil, true)
 	if err := json.Unmarshal(rec.Body.Bytes(), &stats); err != nil {
 		t.Fatal(err)
 	}
-	if stats.Skipped != 3 || stats.Added != 0 || stats.Updated != 0 {
-		t.Fatalf("expected 3 skipped on incremental re-scan, got %+v", stats)
+	if stats.Skipped != 4 || stats.Added != 0 || stats.Updated != 0 {
+		t.Fatalf("expected 4 skipped on incremental re-scan, got %+v", stats)
 	}
 
 	// 4. Verify POST /api/search/smart (aliased to metadata, ignores ML "query": "image")
@@ -161,12 +173,14 @@ func TestEndToEndPhotoAPI(t *testing.T) {
 			Items []struct {
 				ID               string `json:"id"`
 				OriginalFileName string `json:"originalFileName"`
-				Album            string `json:"album"`
+				AlbumName        string `json:"albumName"`
 				ExifInfo         struct {
 					DateTimeOriginal string  `json:"dateTimeOriginal"`
 					City             *string `json:"city"`
 					State            *string `json:"state"`
 					Country          *string `json:"country"`
+					ExifImageWidth   int     `json:"exifImageWidth"`
+					ExifImageHeight  int     `json:"exifImageHeight"`
 				} `json:"exifInfo"`
 			} `json:"items"`
 		} `json:"assets"`
@@ -183,36 +197,68 @@ func TestEndToEndPhotoAPI(t *testing.T) {
 		byName[it.OriginalFileName] = i
 	}
 	saigon := searchResp.Assets.Items[byName["saigon.jpg"]]
-	if saigon.Album != "Saigon Trip" {
-		t.Fatalf("expected album 'Saigon Trip', got %q", saigon.Album)
+	if saigon.AlbumName != "Saigon Trip" {
+		t.Fatalf("expected albumName 'Saigon Trip', got %q", saigon.AlbumName)
 	}
 	if saigon.ExifInfo.City == nil || *saigon.ExifInfo.City != "Ho Chi Minh City" || *saigon.ExifInfo.Country != "Vietnam" {
 		t.Fatalf("expected Ho Chi Minh City, Vietnam; got %+v", saigon.ExifInfo)
 	}
 
 	la := searchResp.Assets.Items[byName["la_4k.jpg"]]
-	if la.Album != "" {
-		t.Fatalf("expected empty album for numeric folder '07', got %q", la.Album)
+	if la.AlbumName != "" {
+		t.Fatalf("expected empty albumName for numeric folder '07', got %q", la.AlbumName)
+	}
+	if la.ExifInfo.ExifImageWidth != 3200 || la.ExifInfo.ExifImageHeight != 1800 {
+		t.Fatalf("expected 3200x1800 dimensions, got %dx%d", la.ExifInfo.ExifImageWidth, la.ExifInfo.ExifImageHeight)
 	}
 	if la.ExifInfo.City == nil || *la.ExifInfo.City != "Los Angeles" || *la.ExifInfo.State != "California" || *la.ExifInfo.Country != "United States" {
 		t.Fatalf("expected Los Angeles, California, United States; got %+v", la.ExifInfo)
 	}
 
-	// 5. Verify GET /api/memories?for=2025-07-15T00:00:00Z (all 3 assets taken on July 15 across 2021, 2022, 2023)
-	rec = env.doJSON(t, "GET", "/api/memories?for=2025-07-15T00:00:00Z", nil, true)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("memories failed: %d %s", rec.Code, rec.Body.String())
+	// Verify HEIC asset extracted CreateDate (2020-07-15), GPS (Ho Chi Minh City), Orientation 6, AlbumName
+	heicID := scanner.DeterministicUUID("2020/Phone Backup/iphone.heic")
+	heicRec := env.doJSON(t, "GET", "/api/assets/"+heicID, nil, true)
+	if heicRec.Code != http.StatusOK {
+		t.Fatalf("get heic asset failed: %d %s", heicRec.Code, heicRec.Body.String())
 	}
-	var memories []struct {
-		Type   string         `json:"type"`
-		Data   map[string]int `json:"data"`
-		Assets []any          `json:"assets"`
+	var heicAsset struct {
+		AlbumName string `json:"albumName"`
+		ExifInfo  struct {
+			DateTimeOriginal string  `json:"dateTimeOriginal"`
+			City             *string `json:"city"`
+			Orientation      string  `json:"orientation"`
+		} `json:"exifInfo"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &memories); err != nil {
+	if err := json.Unmarshal(heicRec.Body.Bytes(), &heicAsset); err != nil {
 		t.Fatal(err)
 	}
-	if len(memories) != 3 {
-		t.Fatalf("expected 3 yearly memory buckets (2023, 2022, 2021), got %d", len(memories))
+	if !strings.HasPrefix(heicAsset.ExifInfo.DateTimeOriginal, "2020-07-15") {
+		t.Fatalf("expected HEIC CreateDate 2020-07-15, got %q", heicAsset.ExifInfo.DateTimeOriginal)
+	}
+	if heicAsset.ExifInfo.City == nil || *heicAsset.ExifInfo.City != "Ho Chi Minh City" {
+		t.Fatalf("expected HEIC GPS resolved to Ho Chi Minh City, got %+v", heicAsset.ExifInfo.City)
+	}
+	if heicAsset.ExifInfo.Orientation != "6" || heicAsset.AlbumName != "Phone Backup" {
+		t.Fatalf("unexpected HEIC metadata: %+v", heicAsset)
+	}
+
+	// 5. Verify GET /api/memories with BOTH ?for=... AND ?day=15&month=7 (MMM-ImmichSlideShow v3_0)
+	for _, memURL := range []string{"/api/memories?for=2025-07-15T00:00:00Z", "/api/memories?day=15&month=7"} {
+		rec = env.doJSON(t, "GET", memURL, nil, true)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("memories (%s) failed: %d %s", memURL, rec.Code, rec.Body.String())
+		}
+		var memories []struct {
+			Type   string         `json:"type"`
+			Data   map[string]int `json:"data"`
+			Assets []any          `json:"assets"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &memories); err != nil {
+			t.Fatal(err)
+		}
+		if len(memories) != 4 {
+			t.Fatalf("expected 4 yearly memory buckets (2023, 2022, 2021, 2020) for %s, got %d", memURL, len(memories))
+		}
 	}
 
 	// 6. Verify POST /api/search/random
@@ -425,6 +471,25 @@ func writeJPEGWithEXIF(t *testing.T, path string, w, h int, dt string, orientati
 }
 
 func buildEXIFAPP1(dt string, orientation uint16, lat, lon float64) []byte {
+	return buildEXIFAPP1WithTag(0x9003, dt, orientation, lat, lon)
+}
+
+func writeSyntheticHEICWithCreateDate(t *testing.T, path, dt string, orientation uint16, lat, lon float64) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Tag 0x9004 = DateTimeDigitized (CreateDate), embedded inside a minimal ISO BMFF-like header
+	app1 := buildEXIFAPP1WithTag(0x9004, dt, orientation, lat, lon)
+	var heic bytes.Buffer
+	heic.Write([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'h', 'e', 'i', 'c', 0, 0, 0, 0, 'm', 'i', 'f', '1', 'h', 'e', 'i', 'c'})
+	heic.Write(app1[4:]) // Raw "Exif\x00\x00" + TIFF payload as stored in HEIC Exif item
+	if err := os.WriteFile(path, heic.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func buildEXIFAPP1WithTag(dateTag uint16, dt string, orientation uint16, lat, lon float64) []byte {
 	var tiff bytes.Buffer
 	be := binary.BigEndian
 
@@ -434,26 +499,23 @@ func buildEXIFAPP1(dt string, orientation uint16, lat, lon float64) []byte {
 	_ = binary.Write(&tiff, be, uint32(8))
 
 	// IFD0: 3 entries (Orientation, ExifIFDPointer, GPSInfoIFDPointer)
-	// Offset 8: 2 (count) + 3*12 (36) + 4 (next) = 42 bytes -> ends at 50
 	exifIFDOffset := uint32(50)
-	// ExifIFD: 1 entry (DateTimeOriginal) -> 2 + 12 + 4 = 18 bytes -> ends at 68
 	dtOffset := uint32(68)
 	dtBytes := append([]byte(dt), 0) // 20 bytes -> ends at 88
 	gpsIFDOffset := uint32(88)
-	// GPS IFD: 4 entries (LatRef, Lat, LonRef, Lon) -> 2 + 4*12 + 4 = 54 bytes -> ends at 142
-	latDataOffset := uint32(142) // 3 rationals = 24 bytes -> ends at 166
-	lonDataOffset := uint32(166) // 3 rationals = 24 bytes -> ends at 190
+	latDataOffset := uint32(142)
+	lonDataOffset := uint32(166)
 
 	// Write IFD0
 	_ = binary.Write(&tiff, be, uint16(3))
-	writeIFDEntry(&tiff, 0x0112, 3, 1, uint32(orientation)<<16) // Orientation (SHORT)
-	writeIFDEntry(&tiff, 0x8769, 4, 1, exifIFDOffset)           // ExifIFDPointer
-	writeIFDEntry(&tiff, 0x8825, 4, 1, gpsIFDOffset)            // GPSInfoIFDPointer
-	_ = binary.Write(&tiff, be, uint32(0))                      // next IFD
+	writeIFDEntry(&tiff, 0x0112, 3, 1, uint32(orientation)<<16)
+	writeIFDEntry(&tiff, 0x8769, 4, 1, exifIFDOffset)
+	writeIFDEntry(&tiff, 0x8825, 4, 1, gpsIFDOffset)
+	_ = binary.Write(&tiff, be, uint32(0))
 
 	// Write ExifIFD
 	_ = binary.Write(&tiff, be, uint16(1))
-	writeIFDEntry(&tiff, 0x9003, 2, uint32(len(dtBytes)), dtOffset) // DateTimeOriginal
+	writeIFDEntry(&tiff, dateTag, 2, uint32(len(dtBytes)), dtOffset)
 	_ = binary.Write(&tiff, be, uint32(0))
 	tiff.Write(dtBytes)
 

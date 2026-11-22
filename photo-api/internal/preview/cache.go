@@ -20,6 +20,13 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+type Options struct {
+	MaxWidth    int
+	MaxHeight   int
+	JPEGQuality int
+	MaxMB       int64
+}
+
 type Cache struct {
 	cacheDir    string
 	maxWidth    int
@@ -31,29 +38,29 @@ type Cache struct {
 	evictMu sync.Mutex
 }
 
-func NewCache(dataDir string, maxWidth, maxHeight, jpegQuality int, maxMB int64) (*Cache, error) {
+func NewCache(dataDir string, opts Options) (*Cache, error) {
 	cacheDir := filepath.Join(dataDir, "cache")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create preview cache dir %s: %w", cacheDir, err)
 	}
-	if maxWidth <= 0 {
-		maxWidth = 2560
+	if opts.MaxWidth <= 0 {
+		opts.MaxWidth = 2560
 	}
-	if maxHeight <= 0 {
-		maxHeight = 1440
+	if opts.MaxHeight <= 0 {
+		opts.MaxHeight = 1440
 	}
-	if jpegQuality <= 0 || jpegQuality > 100 {
-		jpegQuality = 88
+	if opts.JPEGQuality <= 0 || opts.JPEGQuality > 100 {
+		opts.JPEGQuality = 88
 	}
-	if maxMB <= 0 {
-		maxMB = 1024
+	if opts.MaxMB <= 0 {
+		opts.MaxMB = 1024
 	}
 	return &Cache{
 		cacheDir:    cacheDir,
-		maxWidth:    maxWidth,
-		maxHeight:   maxHeight,
-		jpegQuality: jpegQuality,
-		maxBytes:    maxMB * 1024 * 1024,
+		maxWidth:    opts.MaxWidth,
+		maxHeight:   opts.MaxHeight,
+		jpegQuality: opts.JPEGQuality,
+		maxBytes:    opts.MaxMB * 1024 * 1024,
 	}, nil
 }
 
@@ -198,66 +205,39 @@ func applyOrientation(src image.Image, orientation int) image.Image {
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
 
+	dstW, dstH := w, h
+	if orientation >= 5 && orientation <= 8 {
+		dstW, dstH = h, w
+	}
+
+	var mapCoord func(x, y int) (int, int)
 	switch orientation {
-	case 2: // Flip horizontal
-		dst := image.NewRGBA(image.Rect(0, 0, w, h))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				dst.Set(w-1-x, y, src.At(b.Min.X+x, b.Min.Y+y))
-			}
-		}
-		return dst
-	case 3: // Rotate 180
-		dst := image.NewRGBA(image.Rect(0, 0, w, h))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				dst.Set(w-1-x, h-1-y, src.At(b.Min.X+x, b.Min.Y+y))
-			}
-		}
-		return dst
-	case 4: // Flip vertical
-		dst := image.NewRGBA(image.Rect(0, 0, w, h))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				dst.Set(x, h-1-y, src.At(b.Min.X+x, b.Min.Y+y))
-			}
-		}
-		return dst
-	case 5: // Transpose (flip horizontal + rotate 270 CW)
-		dst := image.NewRGBA(image.Rect(0, 0, h, w))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				dst.Set(y, x, src.At(b.Min.X+x, b.Min.Y+y))
-			}
-		}
-		return dst
-	case 6: // Rotate 90 CW
-		dst := image.NewRGBA(image.Rect(0, 0, h, w))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				dst.Set(h-1-y, x, src.At(b.Min.X+x, b.Min.Y+y))
-			}
-		}
-		return dst
-	case 7: // Transverse (flip horizontal + rotate 90 CW)
-		dst := image.NewRGBA(image.Rect(0, 0, h, w))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				dst.Set(h-1-y, w-1-x, src.At(b.Min.X+x, b.Min.Y+y))
-			}
-		}
-		return dst
-	case 8: // Rotate 270 CW
-		dst := image.NewRGBA(image.Rect(0, 0, h, w))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				dst.Set(y, w-1-x, src.At(b.Min.X+x, b.Min.Y+y))
-			}
-		}
-		return dst
+	case 2:
+		mapCoord = func(x, y int) (int, int) { return w - 1 - x, y }
+	case 3:
+		mapCoord = func(x, y int) (int, int) { return w - 1 - x, h - 1 - y }
+	case 4:
+		mapCoord = func(x, y int) (int, int) { return x, h - 1 - y }
+	case 5:
+		mapCoord = func(x, y int) (int, int) { return y, x }
+	case 6:
+		mapCoord = func(x, y int) (int, int) { return h - 1 - y, x }
+	case 7:
+		mapCoord = func(x, y int) (int, int) { return h - 1 - y, w - 1 - x }
+	case 8:
+		mapCoord = func(x, y int) (int, int) { return y, w - 1 - x }
 	default:
 		return src
 	}
+
+	dst := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			dx, dy := mapCoord(x, y)
+			dst.Set(dx, dy, src.At(b.Min.X+x, b.Min.Y+y))
+		}
+	}
+	return dst
 }
 
 type cachedFile struct {

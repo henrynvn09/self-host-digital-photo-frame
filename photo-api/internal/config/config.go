@@ -9,7 +9,7 @@ import (
 
 type Config struct {
 	Port            string
-	PhotosDir       string
+	LibraryDir      string
 	DataDir         string
 	GeoNamesDir     string
 	APIKey          string
@@ -24,7 +24,7 @@ type Config struct {
 func Load() Config {
 	return Config{
 		Port:            getEnv("PORT", "2283"),
-		PhotosDir:       getEnv("PHOTOS_DIR", "/photos"),
+		LibraryDir:      getEnv("PHOTOS_DIR", "/photos"),
 		DataDir:         getEnv("DATA_DIR", "/data"),
 		GeoNamesDir:     getEnv("GEONAMES_DIR", "/app/geonames"),
 		APIKey:          os.Getenv("API_KEY"),

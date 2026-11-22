@@ -1,6 +1,6 @@
-# Thin MagicMirror image extending karsten13/magicmirror with pinned modules
-# (no git submodules or manual npm install required on Synology NAS)
-FROM karsten13/magicmirror:latest
+# Thin MagicMirror image extending pinned karsten13/magicmirror with commit-pinned
+# 3rd-party modules (no git submodules or manual npm install required on Synology NAS)
+FROM karsten13/magicmirror:v2.38.0
 
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
@@ -8,13 +8,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 USER node
 WORKDIR /opt/magic_mirror/modules
 
-RUN git clone --depth 1 https://github.com/pelaxa/MMM-ImmichSlideShow.git \
-    && cd MMM-ImmichSlideShow && npm install --omit=dev
+ARG IMMICH_SLIDESHOW_SHA=832a79c63b5efa61b009e2f39f6f664e7e398c2d
+ARG WORLDCLOCK_SHA=e6bfe734462fa13472e8728434294f4ec1a6c304
+ARG OPENWEATHER_SHA=e36d50f725695c3d8649a35acbaeeb1446c33bbc
 
-RUN git clone --depth 1 https://github.com/bkeyport/MMM-Worldclock.git \
-    && cd MMM-Worldclock && npm install --omit=dev
+RUN git init MMM-ImmichSlideShow \
+    && cd MMM-ImmichSlideShow \
+    && git remote add origin https://github.com/pelaxa/MMM-ImmichSlideShow.git \
+    && git fetch --depth 1 origin ${IMMICH_SLIDESHOW_SHA} \
+    && git checkout --detach FETCH_HEAD \
+    && npm install --omit=dev
 
-RUN git clone --depth 1 https://github.com/jclarke0000/MMM-OpenWeatherMapForecast.git \
-    && cd MMM-OpenWeatherMapForecast && npm install --omit=dev
+RUN git init MMM-Worldclock \
+    && cd MMM-Worldclock \
+    && git remote add origin https://github.com/ulrichwisser/MMM-Worldclock.git \
+    && git fetch --depth 1 origin ${WORLDCLOCK_SHA} \
+    && git checkout --detach FETCH_HEAD \
+    && npm install --omit=dev
+
+RUN git init MMM-OpenWeatherMapForecast \
+    && cd MMM-OpenWeatherMapForecast \
+    && git remote add origin https://github.com/henrynvn09/MMM-OpenWeatherMapForecast.git \
+    && git fetch --depth 1 origin ${OPENWEATHER_SHA} \
+    && git checkout --detach FETCH_HEAD \
+    && npm install --omit=dev
 
 WORKDIR /opt/magic_mirror

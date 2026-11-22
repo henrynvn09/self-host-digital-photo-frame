@@ -19,12 +19,12 @@ import (
 	"photo-api/internal/store"
 )
 
-func checkDirectories(photosDir, dataDir string) error {
-	entries, err := os.ReadDir(photosDir)
+func checkDirectories(libraryDir, dataDir string) error {
+	entries, err := os.ReadDir(libraryDir)
 	if err != nil {
-		return fmt.Errorf("cannot read PHOTOS_DIR %q (check Synology PUID/PGID and volume mount): %w", photosDir, err)
+		return fmt.Errorf("cannot read library %q (check Synology PUID/PGID and volume mount): %w", libraryDir, err)
 	}
-	slog.Info("library readable", "path", photosDir, "top_level_entries", len(entries))
+	slog.Info("library readable", "path", libraryDir, "top_level_entries", len(entries))
 
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return fmt.Errorf("cannot create DATA_DIR %q (check Synology PUID/PGID permissions): %w", dataDir, err)
@@ -42,7 +42,7 @@ func main() {
 	cfg := config.Load()
 	slog.Info("starting photo-api",
 		"port", cfg.Port,
-		"photos_dir", cfg.PhotosDir,
+		"library_dir", cfg.LibraryDir,
 		"data_dir", cfg.DataDir,
 		"max_resolution", fmt.Sprintf("%dx%d", cfg.MaxWidth, cfg.MaxHeight),
 		"cache_max_mb", cfg.CacheMaxMB,
@@ -52,7 +52,7 @@ func main() {
 		"gid", os.Getgid(),
 	)
 
-	if err := checkDirectories(cfg.PhotosDir, cfg.DataDir); err != nil {
+	if err := checkDirectories(cfg.LibraryDir, cfg.DataDir); err != nil {
 		slog.Error("startup check failed", "error", err)
 		os.Exit(1)
 	}
@@ -64,13 +64,18 @@ func main() {
 	}
 	defer st.Close()
 
-	cache, err := preview.NewCache(cfg.DataDir, cfg.MaxWidth, cfg.MaxHeight, cfg.JPEGQuality, cfg.CacheMaxMB)
+	cache, err := preview.NewCache(cfg.DataDir, preview.Options{
+		MaxWidth:    cfg.MaxWidth,
+		MaxHeight:   cfg.MaxHeight,
+		JPEGQuality: cfg.JPEGQuality,
+		MaxMB:       cfg.CacheMaxMB,
+	})
 	if err != nil {
 		slog.Error("init preview cache failed", "error", err)
 		os.Exit(1)
 	}
 
-	sc := scanner.New(cfg.PhotosDir, cfg.GeoNamesDir, cfg.ExcludePatterns, st, cache)
+	sc := scanner.New(cfg.LibraryDir, cfg.GeoNamesDir, cfg.ExcludePatterns, st, cache)
 
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
@@ -94,7 +99,7 @@ func main() {
 		}
 	}()
 
-	apiServer := api.NewServer(cfg.PhotosDir, cfg.APIKey, st, sc, cache)
+	apiServer := api.NewServer(cfg.LibraryDir, cfg.APIKey, st, sc, cache)
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           apiServer.Handler(),

@@ -16,22 +16,22 @@ import (
 )
 
 type Server struct {
-	photosDir string
-	apiKey    string
-	store     *store.Store
-	scanner   *scanner.Scanner
-	cache     *preview.Cache
-	mux       *http.ServeMux
+	libraryDir string
+	apiKey     string
+	store      *store.Store
+	scanner    *scanner.Scanner
+	cache      *preview.Cache
+	mux        *http.ServeMux
 }
 
-func NewServer(photosDir, apiKey string, st *store.Store, sc *scanner.Scanner, cache *preview.Cache) *Server {
+func NewServer(libraryDir, apiKey string, st *store.Store, sc *scanner.Scanner, cache *preview.Cache) *Server {
 	s := &Server{
-		photosDir: photosDir,
-		apiKey:    apiKey,
-		store:     st,
-		scanner:   sc,
-		cache:     cache,
-		mux:       http.NewServeMux(),
+		libraryDir: libraryDir,
+		apiKey:     apiKey,
+		store:      st,
+		scanner:    sc,
+		cache:      cache,
+		mux:        http.NewServeMux(),
 	}
 	s.registerRoutes()
 	return s
@@ -49,7 +49,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/search/random", s.handleSearchRandom)
 	s.mux.HandleFunc("GET /api/memories", s.handleMemories)
 	s.mux.HandleFunc("GET /api/assets/{id}", s.handleGetAsset)
-	s.mux.HandleFunc("GET /api/assets/{id}/thumbnail", s.handleAssetThumbnail)
+	s.mux.HandleFunc("GET /api/assets/{id}/thumbnail", s.handleAssetPreview)
 	s.mux.HandleFunc("POST /api/admin/scan", s.handleAdminScan)
 }
 
@@ -92,6 +92,8 @@ type immichExifInfo struct {
 	State            *string `json:"state"`
 	Country          *string `json:"country"`
 	Orientation      string  `json:"orientation,omitempty"`
+	ExifImageWidth   int     `json:"exifImageWidth,omitempty"`
+	ExifImageHeight  int     `json:"exifImageHeight,omitempty"`
 }
 
 type immichAsset struct {
@@ -102,7 +104,7 @@ type immichAsset struct {
 	FileModifiedAt   string         `json:"fileModifiedAt"`
 	LocalDateTime    string         `json:"localDateTime"`
 	ExifInfo         immichExifInfo `json:"exifInfo"`
-	Album            string         `json:"album,omitempty"`
+	AlbumName        string         `json:"albumName,omitempty"`
 }
 
 func toImmichAsset(a store.Asset) immichAsset {
@@ -121,8 +123,10 @@ func toImmichAsset(a store.Asset) immichAsset {
 			State:            nullableString(a.State),
 			Country:          nullableString(a.Country),
 			Orientation:      strconv.Itoa(a.Orientation),
+			ExifImageWidth:   a.Width,
+			ExifImageHeight:  a.Height,
 		},
-		Album: a.Album,
+		AlbumName: a.Album,
 	}
 }
 
@@ -143,13 +147,47 @@ type searchRequest struct {
 	Size        int    `json:"size"`
 }
 
-func (s *Server) handleSearchMetadata(w http.ResponseWriter, r *http.Request) {
+type parsedSearch struct {
+	nonImage    bool
+	takenAfter  *time.Time
+	takenBefore *time.Time
+	order       string
+	page        int
+	size        int
+}
+
+func parseSearchRequest(r *http.Request) (parsedSearch, error) {
 	var req searchRequest
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
-
 	if req.Type != "" && !strings.EqualFold(req.Type, "IMAGE") {
+		return parsedSearch{nonImage: true}, nil
+	}
+	takenAfter, err := parseOptionalTime(req.TakenAfter)
+	if err != nil {
+		return parsedSearch{}, fmt.Errorf("invalid takenAfter")
+	}
+	takenBefore, err := parseOptionalTime(req.TakenBefore)
+	if err != nil {
+		return parsedSearch{}, fmt.Errorf("invalid takenBefore")
+	}
+	return parsedSearch{
+		takenAfter:  takenAfter,
+		takenBefore: takenBefore,
+		order:       req.Order,
+		page:        req.Page,
+		size:        req.Size,
+	}, nil
+}
+
+func (s *Server) handleSearchMetadata(w http.ResponseWriter, r *http.Request) {
+	ps, err := parseSearchRequest(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+		return
+	}
+	if ps.nonImage {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"assets": map[string]any{
 				"total":    0,
@@ -161,30 +199,11 @@ func (s *Server) handleSearchMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	takenAfter, err := parseOptionalTime(req.TakenAfter)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid takenAfter"})
-		return
-	}
-	takenBefore, err := parseOptionalTime(req.TakenBefore)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid takenBefore"})
-		return
-	}
-
-	page := req.Page
-	if page <= 0 {
-		page = 1
-	}
-	size := req.Size
-	if size <= 0 {
-		size = 250
-	}
-
+	page, size := store.NormalizePageSize(ps.page, ps.size)
 	res, err := s.store.SearchMetadata(r.Context(), store.SearchParams{
-		TakenAfter:  takenAfter,
-		TakenBefore: takenBefore,
-		Order:       req.Order,
+		TakenAfter:  ps.takenAfter,
+		TakenBefore: ps.takenBefore,
+		Order:       ps.order,
 		Page:        page,
 		Size:        size,
 	})
@@ -215,28 +234,17 @@ func (s *Server) handleSearchMetadata(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSearchRandom(w http.ResponseWriter, r *http.Request) {
-	var req searchRequest
-	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&req)
+	ps, err := parseSearchRequest(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+		return
 	}
-
-	if req.Type != "" && !strings.EqualFold(req.Type, "IMAGE") {
+	if ps.nonImage {
 		writeJSON(w, http.StatusOK, []immichAsset{})
 		return
 	}
 
-	takenAfter, err := parseOptionalTime(req.TakenAfter)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid takenAfter"})
-		return
-	}
-	takenBefore, err := parseOptionalTime(req.TakenBefore)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid takenBefore"})
-		return
-	}
-
-	assets, err := s.store.SearchRandom(r.Context(), takenAfter, takenBefore, req.Size)
+	assets, err := s.store.SearchRandom(r.Context(), ps.takenAfter, ps.takenBefore, ps.size)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
@@ -258,17 +266,28 @@ type memoryBucket struct {
 }
 
 func (s *Server) handleMemories(w http.ResponseWriter, r *http.Request) {
-	refDate := time.Now().UTC()
-	if forParam := r.URL.Query().Get("for"); forParam != "" {
+	q := r.URL.Query()
+	now := time.Now().UTC()
+	month, day, currentYear := int(now.Month()), now.Day(), now.Year()
+
+	if forParam := q.Get("for"); forParam != "" {
 		parsed, err := parseOptionalTime(forParam)
 		if err != nil || parsed == nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid 'for' date"})
 			return
 		}
-		refDate = parsed.UTC()
+		month, day, currentYear = int(parsed.Month()), parsed.Day(), parsed.Year()
+	} else if dayStr, monthStr := q.Get("day"), q.Get("month"); dayStr != "" && monthStr != "" {
+		d, err1 := strconv.Atoi(dayStr)
+		m, err2 := strconv.Atoi(monthStr)
+		if err1 != nil || err2 != nil || m < 1 || m > 12 || d < 1 || d > 31 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid 'day' or 'month'"})
+			return
+		}
+		month, day = m, d
 	}
 
-	assets, err := s.store.MemoriesForDate(r.Context(), int(refDate.Month()), refDate.Day(), refDate.Year())
+	assets, err := s.store.MemoriesForDate(r.Context(), month, day, currentYear)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
@@ -285,9 +304,9 @@ func (s *Server) handleMemories(w http.ResponseWriter, r *http.Request) {
 
 	buckets := make([]memoryBucket, 0, len(years))
 	for _, y := range years {
-		memAt := time.Date(y, refDate.Month(), refDate.Day(), 0, 0, 0, 0, time.UTC)
+		memAt := time.Date(y, time.Month(month), day, 0, 0, 0, 0, time.UTC)
 		buckets = append(buckets, memoryBucket{
-			ID:       fmt.Sprintf("on-this-day-%04d-%02d-%02d", y, int(refDate.Month()), refDate.Day()),
+			ID:       fmt.Sprintf("on-this-day-%04d-%02d-%02d", y, month, day),
 			Type:     "on_this_day",
 			MemoryAt: memAt.Format(time.RFC3339),
 			Data:     map[string]int{"year": y},
@@ -297,29 +316,31 @@ func (s *Server) handleMemories(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, buckets)
 }
 
-func (s *Server) handleGetAsset(w http.ResponseWriter, r *http.Request) {
+func (s *Server) lookupAsset(w http.ResponseWriter, r *http.Request) *store.Asset {
 	id := r.PathValue("id")
 	asset, err := s.store.GetAsset(r.Context(), id)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
+		return nil
 	}
 	if asset == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Asset not found"})
+		return nil
+	}
+	return asset
+}
+
+func (s *Server) handleGetAsset(w http.ResponseWriter, r *http.Request) {
+	asset := s.lookupAsset(w, r)
+	if asset == nil {
 		return
 	}
 	writeJSON(w, http.StatusOK, toImmichAsset(*asset))
 }
 
-func (s *Server) handleAssetThumbnail(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	asset, err := s.store.GetAsset(r.Context(), id)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
-	}
+func (s *Server) handleAssetPreview(w http.ResponseWriter, r *http.Request) {
+	asset := s.lookupAsset(w, r)
 	if asset == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Asset not found"})
 		return
 	}
 
@@ -329,7 +350,7 @@ func (s *Server) handleAssetThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sourcePath := filepath.Join(s.photosDir, filepath.FromSlash(asset.RelPath))
+	sourcePath := filepath.Join(s.libraryDir, filepath.FromSlash(asset.RelPath))
 	cachedPath, err := s.cache.GetOrGenerate(r.Context(), asset.ID, sourcePath, asset.Orientation)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})

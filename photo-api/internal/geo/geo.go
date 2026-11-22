@@ -54,8 +54,8 @@ func LoadFromDir(dir string) (*Resolver, error) {
 		countries: make(map[string]string, 256),
 	}
 
-	_ = r.loadCountries(filepath.Join(dir, "countryInfo.txt"))
-	_ = r.loadAdmin1(filepath.Join(dir, "admin1CodesASCII.txt"))
+	_ = loadTSVMap(filepath.Join(dir, "countryInfo.txt"), 0, 4, r.countries)
+	_ = loadTSVMap(filepath.Join(dir, "admin1CodesASCII.txt"), 0, 1, r.admin1)
 
 	if err := r.loadCities(citiesPath); err != nil {
 		return nil, err
@@ -63,12 +63,17 @@ func LoadFromDir(dir string) (*Resolver, error) {
 	return r, nil
 }
 
-func (r *Resolver) loadCountries(path string) error {
+func loadTSVMap(path string, keyCol, valCol int, dst map[string]string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+
+	minCols := valCol + 1
+	if keyCol+1 > minCols {
+		minCols = keyCol + 1
+	}
 
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -77,29 +82,8 @@ func (r *Resolver) loadCountries(path string) error {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) >= 5 {
-			r.countries[fields[0]] = fields[4]
-		}
-	}
-	return sc.Err()
-}
-
-func (r *Resolver) loadAdmin1(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := sc.Text()
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		fields := strings.Split(line, "\t")
-		if len(fields) >= 2 {
-			r.admin1[fields[0]] = fields[1]
+		if len(fields) >= minCols {
+			dst[fields[keyCol]] = fields[valCol]
 		}
 	}
 	return sc.Err()
