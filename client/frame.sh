@@ -32,7 +32,11 @@ display_power() {
 		fi
 	fi
 	if command -v /usr/bin/vcgencmd >/dev/null 2>&1; then
-		[[ "$mode" == "on" ]] && /usr/bin/vcgencmd display_power 1 >/dev/null 2>&1 || /usr/bin/vcgencmd display_power 0 >/dev/null 2>&1 || true
+		if [[ "$mode" == "on" ]]; then
+			/usr/bin/vcgencmd display_power 1 >/dev/null 2>&1 || true
+		else
+			/usr/bin/vcgencmd display_power 0 >/dev/null 2>&1 || true
+		fi
 	fi
 }
 
