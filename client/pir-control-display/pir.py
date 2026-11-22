@@ -111,6 +111,20 @@ def log(msg):
 
 
 def display_power(state: int) -> bool:
+    display = os.environ.get("DISPLAY", ":0")
+    ok = False
+    try:
+        dpms_cmd = "on" if state == 1 else "off"
+        subprocess.run(
+            ["xset", "-display", display, "dpms", "force", dpms_cmd],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+        ok = True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
     try:
         subprocess.run(
             [VCGENCMD, "display_power", str(state)],
@@ -118,23 +132,38 @@ def display_power(state: int) -> bool:
             stderr=subprocess.DEVNULL,
             check=True,
         )
-        return True
+        ok = True
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
+        pass
+    return ok
 
 
 def read_display_state() -> bool:
     """Return True if display is off, False if on (best-effort)."""
+    display = os.environ.get("DISPLAY", ":0")
+    try:
+        result = subprocess.run(
+            ["xset", "-display", display, "q"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        if "Monitor is On" in result.stdout:
+            return False
+        if "Monitor is Off" in result.stdout:
+            return True
+    except Exception:
+        pass
+
     try:
         result = subprocess.run(
             [VCGENCMD, "display_power"], capture_output=True, text=True, check=True
         )
-        # Expected output: display_power=1 or display_power=0
         if "display_power=1" in result.stdout:
             return False
     except Exception:
         pass
-    return True  # assume off if uncertain to avoid redundant ON command
+    return True
 
 
 def cancel_timer():

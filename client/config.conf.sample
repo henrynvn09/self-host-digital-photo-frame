@@ -36,6 +36,11 @@ SATURDAY_SUNDAY=08:00-20:45
 SERVER_IP=192.168.4.45
 SERVER_PORT=8036
 
+# === Browser Viewer Backend ===
+# Default 'webkit' runs client/kiosk.py (~100-140MB RAM, no ~/MagicMirror needed).
+# Alternatives: 'chromium' (kiosk mode with 128MB V8 heap cap) or 'electron' (legacy).
+BROWSER_BACKEND=webkit
+
 # === PIR Motion Sensor ===
 # Automatic display power management based on motion detection
 # The display turns ON when motion is detected and OFF after timeout

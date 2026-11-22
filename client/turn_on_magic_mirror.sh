@@ -151,12 +151,6 @@ validate_old_processes() {
 # Pre-start validation: clear old processes
 validate_old_processes
 
-# Ensure MagicMirror directory exists
-if [[ ! -d "${MM_DIR}" ]]; then
-	log "MagicMirror directory not found: ${MM_DIR}" >&2
-	exit 1
-fi
-
 # Check server connectivity before starting
 log "Checking MagicMirror server connectivity..."
 if ! "${SCRIPT_DIR}/check_server.sh" 5 3; then
@@ -164,72 +158,24 @@ if ! "${SCRIPT_DIR}/check_server.sh" 5 3; then
 	exit 1
 fi
 
-# Turn on display when starting MagicMirror
-if command -v /usr/bin/vcgencmd >/dev/null 2>&1; then
-	/usr/bin/vcgencmd display_power 1 2>/dev/null || log "Warning: vcgencmd failed (display may not power on)."
-fi
+# Turn on display when starting viewer (Bookworm X11 DPMS + vcgencmd fallback)
+"${SCRIPT_DIR}/pir-control-display/turn_on_display.sh" || true
 
-log "Starting MagicMirror (client-only) to ${ADDRESS}:${PORT}..."
-
-# Set up environment for client-only mode
-export clientonly=1
-export config="{\"address\":\"${ADDRESS}\",\"port\":${PORT}}"
+log "Starting frame viewer connecting to ${ADDRESS}:${PORT}..."
 export DISPLAY="${DISPLAY:-:0}"
 
-# Force X11 mode (best for Raspberry Pi 3B)
-cd "${MM_DIR}" || exit 1
+"${SCRIPT_DIR}/mm.sh" &
+ELECTRON_PID=$!
+NPM_PID=$ELECTRON_PID
 
-# Use npm script method (same as mm.sh) - this is the CORRECT way
-# This avoids the "clientonly is not running code null" error
-if [[ -f "${MM_DIR}/package.json" ]] && grep -q "start:x11" "${MM_DIR}/package.json" 2>/dev/null; then
-	log "Using npm run start:x11 (recommended method)"
-	npm run start:x11 &
-	NPM_PID=$!
-	
-	# Wait for electron child to spawn (with timeout)
-	log "Waiting for electron process to start..."
-	ELECTRON_PID=""
-	for i in {1..10}; do
-		sleep 0.5
-		# Find electron child process of npm
-		ELECTRON_PID=$(pgrep -P "${NPM_PID}" 2>/dev/null | head -1)
-		if [[ -n "${ELECTRON_PID}" ]]; then
-			break
-		fi
-	done
-	
-	# Verify we found electron
-	if [[ -z "${ELECTRON_PID}" ]]; then
-		log "ERROR: Could not find electron child process after 5 seconds!"
-		log "npm PID ${NPM_PID} may have failed to spawn electron"
-		log "Check output above for errors or run with journalctl if using systemd"
-		kill "${NPM_PID}" 2>/dev/null || true
-		exit 1
-	fi
-	
-	# Save both PIDs to file
-	cat > "${PID_FILE}" << EOF
+cat > "${PID_FILE}" << EOF
 NPM:${NPM_PID}
 ELECTRON:${ELECTRON_PID}
 EOF
-	log "MagicMirror started - npm PID: ${NPM_PID}, electron PID: ${ELECTRON_PID}"
-	
-else
-	# Fallback: direct electron launch (for older MagicMirror versions)
-	log "Using direct electron launch (fallback method)"
-	./node_modules/.bin/electron js/electron.js &
-	ELECTRON_PID=$!
-	
-	# For direct launch, npm PID is same as electron PID (no parent)
-	cat > "${PID_FILE}" << EOF
-NPM:${ELECTRON_PID}
-ELECTRON:${ELECTRON_PID}
-EOF
-	log "MagicMirror started (PID ${ELECTRON_PID})"
-fi
+log "Frame viewer started (PID ${ELECTRON_PID})"
 
-# Give MagicMirror a moment to initialize before starting PIR
-sleep 3
+# Give viewer a moment to initialize before starting PIR
+sleep 2
 
 # Verify electron is still running
 if ! kill -0 "${ELECTRON_PID}" 2>/dev/null; then

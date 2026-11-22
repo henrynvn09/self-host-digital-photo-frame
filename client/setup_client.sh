@@ -116,24 +116,12 @@ preflight_checks() {
     fi
     print_success "Sudo access confirmed"
     
-    # Check if MagicMirror directory exists
-    if [[ ! -d "$MM_DIR" ]]; then
-        print_error "MagicMirror directory not found: $MM_DIR"
-        print_info "Please install MagicMirror first:"
-        print_info "  bash -c \"\$(curl -sL https://raw.githubusercontent.com/sdetweil/MagicMirror_scripts/master/raspberry.sh)\""
-        exit 1
+    # Check for WebKitGTK kiosk viewer support (no ~/MagicMirror required on Pi 4!)
+    if python3 -c 'import gi; gi.require_version("WebKit2", "4.1")' >/dev/null 2>&1 || \
+       python3 -c 'import gi; gi.require_version("WebKit2", "4.0")' >/dev/null 2>&1; then
+        print_success "WebKitGTK kiosk viewer (kiosk.py) ready"
     else
-        print_success "MagicMirror found at: $MM_DIR"
-    fi
-    
-    # Check for required npm scripts in package.json
-    if [[ -f "$MM_DIR/package.json" ]]; then
-        if grep -q "start:x11" "$MM_DIR/package.json"; then
-            print_success "MagicMirror has X11 client support"
-        else
-            print_warning "MagicMirror may not have X11 client script"
-            print_info "This is usually okay, fallback method will be used"
-        fi
+        print_info "WebKitGTK packages will be installed in the next step (no ~/MagicMirror needed)"
     fi
     
     # Check if repository is in expected location
@@ -218,6 +206,13 @@ install_dependencies() {
         print_success "git is installed"
     fi
     
+    # Check for WebKitGTK, GTK3, xset, and gpiozero packages (Debian 12 Bookworm)
+    for pkg in python3-gi gir1.2-webkit2-4.1 gir1.2-gtk-3.0 x11-xserver-utils python3-gpiozero; do
+        if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+            packages_to_install+=("$pkg")
+        fi
+    done
+
     # Install missing packages
     if [[ ${#packages_to_install[@]} -gt 0 ]]; then
         print_info "Need to install: ${packages_to_install[*]}"

@@ -23,10 +23,10 @@ KILL_TIMEOUT=5  # seconds to wait before force-kill
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
-# Try to power off display
-if command -v /usr/bin/vcgencmd >/dev/null 2>&1; then
-	/usr/bin/vcgencmd display_power 0 2>/dev/null || log "Warning: vcgencmd failed (display may already be off)."
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Try to power off display (Bookworm X11 DPMS + vcgencmd fallback)
+"${SCRIPT_DIR}/pir-control-display/turn_off_display.sh" || true
 
 kill_process() {
 	# Args: pid expected_substring human_name
@@ -113,7 +113,8 @@ if [[ -f "${PID_FILE}" ]]; then
 		fi
 	fi
 	
-	# Aggressive cleanup: kill any remaining electron processes
+	# Aggressive cleanup: kill any remaining kiosk/electron processes
+	pkill -9 -f "kiosk.py" 2>/dev/null || true
 	pkill -9 -f "electron.*js/electron.js" 2>/dev/null || true
 	
 	# Remove PID file

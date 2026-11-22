@@ -228,13 +228,8 @@ start_magicmirror() {
 	debug_log ">>> start_magicmirror() called"
 	log "Starting MagicMirror..."
 	
-	# Turn display ON
-	if command -v /usr/bin/vcgencmd >/dev/null 2>&1; then
-		debug_log "Attempting to turn display ON..."
-		local display_result
-		display_result=$(/usr/bin/vcgencmd display_power 1 2>&1) || error_log "vcgencmd display_power failed"
-		debug_log "vcgencmd result: $display_result"
-	fi
+	# Turn display ON (Bookworm X11 DPMS + vcgencmd fallback)
+	"${SCRIPT_DIR}/pir-control-display/turn_on_display.sh" || true
 	
 	# Check server connectivity
 	if [[ -f "${SCRIPT_DIR}/check_server.sh" ]]; then
@@ -249,44 +244,21 @@ start_magicmirror() {
 		debug_log "Warning: check_server.sh not found, skipping connectivity check"
 	fi
 	
-	# Start MagicMirror
-	if [[ ! -d "$MM_DIR" ]]; then
-		error_log "MagicMirror directory not found: $MM_DIR"
-		debug_log "<<< start_magicmirror() failed (MM_DIR not found)"
-		return 1
-	fi
-	
-	debug_log "Changing to MagicMirror directory: $MM_DIR"
-	cd "$MM_DIR" || return 1
-	
-	export clientonly=1
-	export config="{\"address\":\"${SERVER_IP}\",\"port\":${SERVER_PORT}}"
 	export DISPLAY="${DISPLAY:-:0}"
 	
-	debug_log "Environment: clientonly=1, DISPLAY=$DISPLAY"
-	debug_log "Config: address=${SERVER_IP}, port=${SERVER_PORT}"
-	
-	# Start in background, output captured by systemd journal
-	debug_log "Executing: npm run start:x11"
-	npm run start:x11 &
+	# Launch viewer via mm.sh (defaults to lightweight WebKitGTK kiosk, ~100-140MB RAM)
+	debug_log "Executing: ${SCRIPT_DIR}/mm.sh"
+	"${SCRIPT_DIR}/mm.sh" &
 	MM_PID=$!
 	
-	log "MagicMirror started (PID: $MM_PID), waiting for initialization..."
-	debug_log "npm process PID: $MM_PID"
+	log "Frame viewer started (PID: $MM_PID), waiting for initialization..."
+	sleep 2
 	
-	# Wait for electron to spawn
-	debug_log "Waiting 3 seconds for electron to initialize..."
-	sleep 3
-	
-	# Verify MagicMirror is still running
-	debug_log "Verifying MagicMirror process is still alive..."
 	if ! kill -0 "$MM_PID" 2>/dev/null; then
-		error_log "MagicMirror process died immediately after start"
+		error_log "Frame viewer process died immediately after start"
 		MM_PID=""
-		debug_log "<<< start_magicmirror() failed (process died)"
 		return 1
 	fi
-	debug_log "MagicMirror process verified alive"
 	
 	# Start PIR controller
 	if [[ -f "${SCRIPT_DIR}/pir-control-display/pir.py" ]]; then
@@ -349,19 +321,15 @@ stop_magicmirror() {
 	fi
 	MM_PID=""
 	
-	# Aggressive cleanup: kill any remaining electron processes
+	# Aggressive cleanup: kill any remaining kiosk/browser/electron processes
 	debug_log "Performing aggressive cleanup of remaining processes"
+	pkill -9 -f "kiosk.py" 2>/dev/null || true
 	pkill -9 -f "electron.*js/electron.js" 2>/dev/null || true
 	pkill -9 -f "pir.py" 2>/dev/null || true
 	debug_log "Process cleanup completed"
 	
-	# Turn display OFF
-	if command -v /usr/bin/vcgencmd >/dev/null 2>&1; then
-		debug_log "Attempting to turn display OFF..."
-		local display_result
-		display_result=$(/usr/bin/vcgencmd display_power 0 2>&1) || error_log "vcgencmd display_power failed"
-		debug_log "vcgencmd result: $display_result"
-	fi
+	# Turn display OFF (Bookworm X11 DPMS + vcgencmd fallback)
+	"${SCRIPT_DIR}/pir-control-display/turn_off_display.sh" || true
 	
 	CURRENT_STATE="OFF"
 	log "MagicMirror stopped"
@@ -422,10 +390,7 @@ main() {
 	else
 		log "Current time is outside schedule, staying OFF"
 		CURRENT_STATE="OFF"
-		# Ensure display is OFF
-		if command -v /usr/bin/vcgencmd >/dev/null 2>&1; then
-			/usr/bin/vcgencmd display_power 0 2>/dev/null || true
-		fi
+		"${SCRIPT_DIR}/pir-control-display/turn_off_display.sh" || true
 	fi
 	
 	log "Entering main monitoring loop (checking every 30 seconds)..."
