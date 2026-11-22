@@ -31,7 +31,7 @@ func Load() Config {
 		ScanInterval:    getEnvDuration("SCAN_INTERVAL", 30*time.Minute),
 		ExcludePatterns: getEnvList("EXCLUDE_PATTERNS"),
 		MaxWidth:        getEnvInt("MAX_WIDTH", 2560),
-		MaxHeight:       getEnvInt("MAX_HEIGHT", 1440),
+		MaxHeight:       getEnvInt("MAX_HEIGHT", 2560),
 		JPEGQuality:     getEnvInt("JPEG_QUALITY", 88),
 		CacheMaxMB:      int64(getEnvInt("CACHE_MAX_MB", 1024)),
 	}

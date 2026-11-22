@@ -47,7 +47,7 @@ func NewCache(dataDir string, opts Options) (*Cache, error) {
 		opts.MaxWidth = 2560
 	}
 	if opts.MaxHeight <= 0 {
-		opts.MaxHeight = 1440
+		opts.MaxHeight = 2560
 	}
 	if opts.JPEGQuality <= 0 || opts.JPEGQuality > 100 {
 		opts.JPEGQuality = 88
