@@ -8,7 +8,6 @@ SERVER_IP="192.168.4.45"
 SERVER_PORT="8036"
 MONDAY_FRIDAY="16:00-20:45"
 SATURDAY_SUNDAY="08:00-20:45"
-BROWSER_BACKEND="webkit"
 
 if [[ -f "$CONFIG_FILE" ]]; then
 	# shellcheck disable=SC1090
@@ -38,25 +37,13 @@ display_power() {
 }
 
 launch_browser() {
-	if [[ "$BROWSER_BACKEND" == "webkit" ]] && {
-		python3 -c 'import gi; gi.require_version("Gtk", "3.0"); gi.require_version("WebKit2", "4.1")' 2>/dev/null ||
-		python3 -c 'import gi; gi.require_version("Gtk", "3.0"); gi.require_version("WebKit2", "4.0")' 2>/dev/null
-	}; then
-		log "Starting WebKitGTK kiosk -> ${TARGET_URL}"
-		exec python3 "${SCRIPT_DIR}/kiosk.py" "${TARGET_URL}"
+	if ! python3 -c 'import gi; gi.require_version("Gtk", "3.0"); gi.require_version("WebKit2", "4.1")' 2>/dev/null && \
+	   ! python3 -c 'import gi; gi.require_version("Gtk", "3.0"); gi.require_version("WebKit2", "4.0")' 2>/dev/null; then
+		log "ERROR: WebKitGTK (gir1.2-webkit2-4.1) is not installed or failed to import. Run ./install.sh first."
+		exit 1
 	fi
-
-	for bin in chromium-browser chromium; do
-		if command -v "$bin" >/dev/null 2>&1; then
-			log "Starting ${bin} kiosk -> ${TARGET_URL}"
-			exec "$bin" --kiosk --app="${TARGET_URL}" --noerrdialogs --disable-infobars \
-				--disable-session-crashed-bubble --enable-gpu-rasterization --ignore-gpu-blocklist \
-				--js-flags="--max-old-space-size=128"
-		fi
-	done
-
-	log "ERROR: Neither WebKitGTK nor Chromium is installed. Run ./install.sh first."
-	exit 1
+	log "Starting WebKitGTK kiosk -> ${TARGET_URL}"
+	exec python3 "${SCRIPT_DIR}/kiosk.py" "${TARGET_URL}"
 }
 
 in_schedule() {

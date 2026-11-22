@@ -13,7 +13,4 @@ SATURDAY_SUNDAY=08:00-20:45
 PIR_GPIO_PIN=24
 PIR_TIMEOUT_MINUTES=5
 
-# Viewer backend: 'webkit' (~100-140MB RAM, default) or 'chromium'
-BROWSER_BACKEND=webkit
-
 DEBUG=false
