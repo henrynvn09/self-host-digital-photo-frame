@@ -1,0 +1,8 @@
+.env
+data/
+magicmirror/config/config.js
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+photo-api/photo-api

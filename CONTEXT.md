@@ -1,0 +1,37 @@
+# Photoframe
+
+A self-hosted digital photo frame system consisting of a NAS-hosted photo indexing and serving service, a MagicMirror display server, and a motion-aware Raspberry Pi display client.
+
+## Language
+
+### Photo Library & Indexing
+
+**Asset**:
+A single indexed image file in the library, identified by a deterministic path-based ID and described by its capture date, geographic location, and optional album.
+_Avoid_: Photo, image, file, item
+
+**Library**:
+The read-only root directory tree on the NAS containing all original source assets.
+_Avoid_: Photo folder, volume, storage, bucket
+
+**Scan**:
+An incremental pass over the library that adds new assets, updates changed assets, and removes deleted assets from the index while skipping system and excluded directories.
+_Avoid_: Sync, crawl, import, ingest
+
+**Preview**:
+A display-sized (2560×1440 default), EXIF-rotated JPEG rendition generated lazily on demand from an asset and persisted in a bounded LRU disk cache.
+_Avoid_: Thumbnail, resized image, variant
+
+**Album**:
+A human-readable event or trip label derived from an asset's immediate parent directory name, omitted when that directory name is purely numeric.
+_Avoid_: Folder, collection, category, tag
+
+### Display & Client
+
+**Frame Client**:
+The Raspberry Pi 3B kiosk running MagicMirror in client-only X11 mode connected to the NAS server over LAN.
+_Avoid_: Display box, Pi server, kiosk browser
+
+**Display Schedule**:
+The configured weekday and weekend active hours during which the frame client runs MagicMirror and responds to motion detection.
+_Avoid_: Cron window, power timer, uptime rules

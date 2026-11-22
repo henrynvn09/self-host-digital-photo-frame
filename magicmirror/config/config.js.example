@@ -1,0 +1,102 @@
+/* MagicMirror² Configuration Template (secret-free)
+ *
+ * Copy to magicmirror/config/config.js (gitignored) and fill in your own
+ * API keys and coordinates before running `docker compose up -d --build`.
+ */
+let config = {
+	address: "0.0.0.0",
+	port: 8080,
+	basePath: "/",
+	ipWhitelist: [],
+
+	useHttps: false,
+	language: "en",
+	locale: "en-US",
+	logLevel: ["INFO", "LOG", "WARN", "ERROR"],
+	timeFormat: 24,
+	units: "metric",
+
+	modules: [
+		{
+			module: "alert",
+		},
+		{
+			module: "clock",
+			position: "top_left",
+			config: {
+				displaySeconds: false,
+			},
+		},
+		{
+			module: "MMM-Worldclock",
+			position: "top_left",
+			config: {
+				timeFormat: "hh:mm A",
+				style: "top",
+				offsetTimezone: null,
+				clocks: [
+					{
+						title: "VIETNAM",
+						timezone: "Asia/Ho_Chi_Minh",
+						flag: "vn",
+					},
+				],
+			},
+		},
+		{
+			module: "MMM-OpenWeatherMapForecast",
+			header: "",
+			position: "bottom_center",
+			config: {
+				apikey: "YOUR_OPENWEATHERMAP_API_KEY",
+				latitude: "33.8992463",
+				longitude: "-118.0689099",
+				showSummary: false,
+			},
+		},
+		{
+			module: "MMM-ImmichSlideShow",
+			position: "fullscreen_below",
+			config: {
+				immichConfigs: [
+					{
+						// Connects privately to photo-api over the internal Docker network
+						apiKey: "CHANGE_ME_TO_MATCH_API_KEY_IN_ENV",
+						url: "http://photo-api:2283",
+						mode: "anniversary",
+						anniversaryDatesBack: 45,
+						anniversaryDatesForward: 45,
+						anniversaryStartYear: 2010,
+						anniversaryEndYear: 2026,
+						querySize: 20,
+						sortImagesBy: "random",
+						imageInfo: ["date", "geo", "count", "album"],
+						dateFormat: "DD-MM-YYYY dddd HH:mm",
+						slideshowSpeed: 15000,
+					},
+					{
+						apiKey: "CHANGE_ME_TO_MATCH_API_KEY_IN_ENV",
+						url: "http://photo-api:2283",
+						mode: "random",
+						imageInfo: ["date", "geo", "count", "album"],
+						query: {
+							size: 1000,
+							type: "IMAGE",
+						},
+						querySize: 1000,
+						dateFormat: "DD-MM-YYYY dddd HH:mm",
+						slideshowSpeed: 30000,
+						sortImagesBy: "random",
+					},
+				],
+				backgroundSize: "contain",
+				showImageInfo: true,
+				slideshowSpeed: 30000,
+				showBlurredImageForBlackBars: true,
+			},
+		},
+	],
+};
+
+/*************** DO NOT EDIT THE LINE BELOW ***************/
+if (typeof module !== "undefined") { module.exports = config; }
