@@ -99,6 +99,7 @@ type immichExifInfo struct {
 type immichAsset struct {
 	ID               string         `json:"id"`
 	Type             string         `json:"type"`
+	OriginalPath     string         `json:"originalPath"`
 	OriginalFileName string         `json:"originalFileName"`
 	FileCreatedAt    string         `json:"fileCreatedAt"`
 	FileModifiedAt   string         `json:"fileModifiedAt"`
@@ -113,6 +114,7 @@ func toImmichAsset(a store.Asset) immichAsset {
 	return immichAsset{
 		ID:               a.ID,
 		Type:             "IMAGE",
+		OriginalPath:     a.RelPath,
 		OriginalFileName: filepath.Base(a.RelPath),
 		FileCreatedAt:    taken,
 		FileModifiedAt:   mod,

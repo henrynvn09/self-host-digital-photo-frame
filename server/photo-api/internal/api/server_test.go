@@ -172,6 +172,7 @@ func TestEndToEndPhotoAPI(t *testing.T) {
 			Total int `json:"total"`
 			Items []struct {
 				ID               string `json:"id"`
+				OriginalPath     string `json:"originalPath"`
 				OriginalFileName string `json:"originalFileName"`
 				AlbumName        string `json:"albumName"`
 				ExifInfo         struct {
@@ -197,6 +198,9 @@ func TestEndToEndPhotoAPI(t *testing.T) {
 		byName[it.OriginalFileName] = i
 	}
 	saigon := searchResp.Assets.Items[byName["saigon.jpg"]]
+	if saigon.OriginalPath != "2023/Saigon Trip/saigon.jpg" {
+		t.Fatalf("expected originalPath '2023/Saigon Trip/saigon.jpg', got %q", saigon.OriginalPath)
+	}
 	if saigon.AlbumName != "Saigon Trip" {
 		t.Fatalf("expected albumName 'Saigon Trip', got %q", saigon.AlbumName)
 	}
