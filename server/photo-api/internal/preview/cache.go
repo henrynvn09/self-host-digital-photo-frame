@@ -25,6 +25,9 @@ type Options struct {
 	MaxHeight   int
 	JPEGQuality int
 	MaxMB       int64
+	PrebakeBlur bool
+	FrameWidth  int
+	FrameHeight int
 }
 
 type Cache struct {
@@ -33,6 +36,9 @@ type Cache struct {
 	maxHeight   int
 	jpegQuality int
 	maxBytes    int64
+	prebakeBlur bool
+	frameWidth  int
+	frameHeight int
 
 	sf      singleflight.Group
 	evictMu sync.Mutex
@@ -55,12 +61,21 @@ func NewCache(dataDir string, opts Options) (*Cache, error) {
 	if opts.MaxMB <= 0 {
 		opts.MaxMB = 1024
 	}
+	if opts.FrameWidth <= 0 {
+		opts.FrameWidth = 1440
+	}
+	if opts.FrameHeight <= 0 {
+		opts.FrameHeight = 2560
+	}
 	return &Cache{
 		cacheDir:    cacheDir,
 		maxWidth:    opts.MaxWidth,
 		maxHeight:   opts.MaxHeight,
 		jpegQuality: opts.JPEGQuality,
 		maxBytes:    opts.MaxMB * 1024 * 1024,
+		prebakeBlur: opts.PrebakeBlur,
+		frameWidth:  opts.FrameWidth,
+		frameHeight: opts.FrameHeight,
 	}, nil
 }
 
@@ -115,7 +130,11 @@ func (c *Cache) generate(ctx context.Context, sourcePath, targetPath string, ori
 		img = applyOrientation(img, orientation)
 	}
 
-	img = fitWithin(img, c.maxWidth, c.maxHeight)
+	if c.prebakeBlur {
+		img = compositeBlurredFrame(img, c.frameWidth, c.frameHeight)
+	} else {
+		img = fitWithin(img, c.maxWidth, c.maxHeight)
+	}
 
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return err
@@ -198,6 +217,86 @@ func fitWithin(src image.Image, maxW, maxH int) image.Image {
 	dst := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
 	draw.CatmullRom.Scale(dst, dst.Bounds(), src, b, draw.Over, nil)
 	return dst
+}
+
+func compositeBlurredFrame(src image.Image, frameW, frameH int) image.Image {
+	b := src.Bounds()
+	srcW, srcH := b.Dx(), b.Dy()
+	if srcW <= 0 || srcH <= 0 {
+		return src
+	}
+
+	// 1. Build a fast blurred + darkened cover background by scaling down to a tiny grid,
+	// applying 2 box-blur passes, darkening by ~30%, and scaling up to frameW x frameH.
+	smallW := 64
+	smallH := max(16, int(float64(smallW)*float64(frameH)/float64(frameW)+0.5))
+
+	scaleCover := float64(frameW) / float64(srcW)
+	if sH := float64(frameH) / float64(srcH); sH > scaleCover {
+		scaleCover = sH
+	}
+	cropW := int(float64(frameW)/scaleCover + 0.5)
+	cropH := int(float64(frameH)/scaleCover + 0.5)
+	cropX := b.Min.X + (srcW-cropW)/2
+	cropY := b.Min.Y + (srcH-cropH)/2
+	cropRect := image.Rect(cropX, cropY, cropX+cropW, cropY+cropH).Intersect(b)
+
+	small := image.NewRGBA(image.Rect(0, 0, smallW, smallH))
+	draw.BiLinear.Scale(small, small.Bounds(), src, cropRect, draw.Src, nil)
+	small = boxBlurAndDim(small, 3, 0.72)
+
+	canvas := image.NewRGBA(image.Rect(0, 0, frameW, frameH))
+	draw.BiLinear.Scale(canvas, canvas.Bounds(), small, small.Bounds(), draw.Src, nil)
+
+	// 2. Scale the foreground image to fit within frameW x frameH and center it.
+	scaleContain := float64(frameW) / float64(srcW)
+	if sH := float64(frameH) / float64(srcH); sH < scaleContain {
+		scaleContain = sH
+	}
+	fgW := max(1, int(float64(srcW)*scaleContain+0.5))
+	fgH := max(1, int(float64(srcH)*scaleContain+0.5))
+	offsetX := (frameW - fgW) / 2
+	offsetY := (frameH - fgH) / 2
+	fgRect := image.Rect(offsetX, offsetY, offsetX+fgW, offsetY+fgH)
+	draw.CatmullRom.Scale(canvas, fgRect, src, b, draw.Src, nil)
+	return canvas
+}
+
+func boxBlurAndDim(src *image.RGBA, radius int, dim float64) *image.RGBA {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	cur := src
+	for pass := 0; pass < 2; pass++ {
+		next := image.NewRGBA(b)
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				var rSum, gSum, bSum, cnt int
+				for dy := -radius; dy <= radius; dy++ {
+					ny := min(h-1, max(0, y+dy))
+					for dx := -radius; dx <= radius; dx++ {
+						nx := min(w-1, max(0, x+dx))
+						off := ny*cur.Stride + nx*4
+						rSum += int(cur.Pix[off])
+						gSum += int(cur.Pix[off+1])
+						bSum += int(cur.Pix[off+2])
+						cnt++
+					}
+				}
+				dOff := y*next.Stride + x*4
+				next.Pix[dOff] = uint8(rSum / cnt)
+				next.Pix[dOff+1] = uint8(gSum / cnt)
+				next.Pix[dOff+2] = uint8(bSum / cnt)
+				next.Pix[dOff+3] = 255
+			}
+		}
+		cur = next
+	}
+	for i := 0; i < len(cur.Pix); i += 4 {
+		cur.Pix[i] = uint8(float64(cur.Pix[i]) * dim)
+		cur.Pix[i+1] = uint8(float64(cur.Pix[i+1]) * dim)
+		cur.Pix[i+2] = uint8(float64(cur.Pix[i+2]) * dim)
+	}
+	return cur
 }
 
 // applyOrientation transforms an image according to EXIF orientation tags 2-8.

@@ -51,7 +51,7 @@ func setupTestEnv(t *testing.T, cacheMaxMB int64) *testEnv {
 
 	cache, err := preview.NewCache(dataDir, preview.Options{
 		MaxWidth:    2560,
-		MaxHeight:   1440,
+		MaxHeight:   2560,
 		JPEGQuality: 88,
 		MaxMB:       cacheMaxMB,
 	})
@@ -371,6 +371,65 @@ func TestPreviewCacheLRUEviction(t *testing.T) {
 	}
 	if count == 0 || count >= len(names) {
 		t.Fatalf("expected partial LRU eviction (1..%d files remaining), got %d files (%d bytes)", len(names)-1, count, totalSize)
+	}
+}
+
+func TestPrebakeBlurToggle(t *testing.T) {
+	photosDir := t.TempDir()
+	dataDir := t.TempDir()
+
+	writePNG(t, filepath.Join(photosDir, "2024", "Trip", "wide.png"), 800, 400)
+
+	st, err := store.Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	cache, err := preview.NewCache(dataDir, preview.Options{
+		MaxWidth:    2560,
+		MaxHeight:   2560,
+		JPEGQuality: 88,
+		MaxMB:       100,
+		PrebakeBlur: true,
+		FrameWidth:  1440,
+		FrameHeight: 2560,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sc := scanner.New(photosDir, "", nil, st, cache)
+	srv := api.NewServer(photosDir, "secret-key", st, sc, cache)
+	h := srv.Handler()
+
+	scanReq := httptest.NewRequest("POST", "/api/admin/scan", nil)
+	scanReq.Header.Set("x-api-key", "secret-key")
+	scanRec := httptest.NewRecorder()
+	h.ServeHTTP(scanRec, scanReq)
+	if scanRec.Code != http.StatusOK {
+		t.Fatalf("scan failed: %d", scanRec.Code)
+	}
+
+	id := scanner.DeterministicUUID("2024/Trip/wide.png")
+	thumbReq := httptest.NewRequest("GET", "/api/assets/"+id+"/thumbnail", nil)
+	thumbReq.Header.Set("x-api-key", "secret-key")
+	thumbRec := httptest.NewRecorder()
+	h.ServeHTTP(thumbRec, thumbReq)
+	if thumbRec.Code != http.StatusOK {
+		t.Fatalf("thumbnail failed: %d", thumbRec.Code)
+	}
+
+	img, err := jpeg.Decode(bytes.NewReader(thumbRec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("decode prebaked jpeg: %v", err)
+	}
+	if img.Bounds().Dx() != 1440 || img.Bounds().Dy() != 2560 {
+		t.Fatalf("expected 1440x2560 prebaked frame, got %dx%d", img.Bounds().Dx(), img.Bounds().Dy())
+	}
+	r, g, b, _ := img.At(720, 100).RGBA()
+	if r == 0 && g == 0 && b == 0 {
+		t.Fatalf("expected non-black blurred top bar pixel at (720,100)")
 	}
 }
 

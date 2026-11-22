@@ -19,6 +19,9 @@ type Config struct {
 	MaxHeight       int
 	JPEGQuality     int
 	CacheMaxMB      int64
+	PrebakeBlur     bool
+	FrameWidth      int
+	FrameHeight     int
 }
 
 func Load() Config {
@@ -34,6 +37,9 @@ func Load() Config {
 		MaxHeight:       getEnvInt("MAX_HEIGHT", 2560),
 		JPEGQuality:     getEnvInt("JPEG_QUALITY", 88),
 		CacheMaxMB:      int64(getEnvInt("CACHE_MAX_MB", 1024)),
+		PrebakeBlur:     strings.EqualFold(strings.TrimSpace(os.Getenv("PREBAKE_BLUR")), "true"),
+		FrameWidth:      getEnvInt("FRAME_WIDTH", 1440),
+		FrameHeight:     getEnvInt("FRAME_HEIGHT", 2560),
 	}
 }
 

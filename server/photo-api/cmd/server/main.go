@@ -45,6 +45,8 @@ func main() {
 		"library_dir", cfg.LibraryDir,
 		"data_dir", cfg.DataDir,
 		"max_resolution", fmt.Sprintf("%dx%d", cfg.MaxWidth, cfg.MaxHeight),
+		"prebake_blur", cfg.PrebakeBlur,
+		"frame_resolution", fmt.Sprintf("%dx%d", cfg.FrameWidth, cfg.FrameHeight),
 		"cache_max_mb", cfg.CacheMaxMB,
 		"scan_interval", cfg.ScanInterval.String(),
 		"auth_enabled", cfg.APIKey != "",
@@ -69,6 +71,9 @@ func main() {
 		MaxHeight:   cfg.MaxHeight,
 		JPEGQuality: cfg.JPEGQuality,
 		MaxMB:       cfg.CacheMaxMB,
+		PrebakeBlur: cfg.PrebakeBlur,
+		FrameWidth:  cfg.FrameWidth,
+		FrameHeight: cfg.FrameHeight,
 	})
 	if err != nil {
 		slog.Error("init preview cache failed", "error", err)

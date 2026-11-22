@@ -19,6 +19,9 @@ services:
       - MAX_HEIGHT=${MAX_HEIGHT:-2560}
       - JPEG_QUALITY=${JPEG_QUALITY:-88}
       - CACHE_MAX_MB=${CACHE_MAX_MB:-1024}
+      - PREBAKE_BLUR=${PREBAKE_BLUR:-false}
+      - FRAME_WIDTH=${FRAME_WIDTH:-1440}
+      - FRAME_HEIGHT=${FRAME_HEIGHT:-2560}
     volumes:
       # Read-only mount: container can NEVER modify or delete your original Synology Photos
       - ${PHOTOS_PATH:-/volume1/photo}:/photos:ro

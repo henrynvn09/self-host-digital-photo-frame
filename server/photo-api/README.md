@@ -21,9 +21,12 @@ Lightweight, high-performance pure-Go photo indexing and serving service built f
 | `SCAN_INTERVAL` | `30m` | Periodic incremental scan interval |
 | `EXCLUDE_PATTERNS` | *(empty)* | Comma-separated folder/file globs to skip (e.g. `Screenshots,Private`) |
 | `MAX_WIDTH` | `2560` | Max preview width (2K native) |
-| `MAX_HEIGHT` | `1440` | Max preview height (2K native) |
+| `MAX_HEIGHT` | `2560` | Max preview height (2K native, portrait & landscape) |
 | `JPEG_QUALITY` | `88` | JPEG quality (1–100) |
 | `CACHE_MAX_MB` | `1024` | Max preview disk cache size in MB (LRU eviction) |
+| `PREBAKE_BLUR` | `false` | When `true`, pre-composites blurred background bars on the NAS |
+| `FRAME_WIDTH` | `1440` | Target frame width when `PREBAKE_BLUR=true` |
+| `FRAME_HEIGHT` | `2560` | Target frame height when `PREBAKE_BLUR=true` |
 
 ## Endpoints
 
