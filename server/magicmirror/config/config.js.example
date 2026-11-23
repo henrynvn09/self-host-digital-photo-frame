@@ -44,6 +44,39 @@ let config = {
 			},
 		},
 		{
+			module: "calendar",
+			header: "CUỘC HẸN SẮP TỚI",
+			position: "top_center",
+			config: {
+				calendars: [
+					{
+						fetchInterval: 60 * 1000,
+						symbol: "lich trong nha",
+						url: "https://calendar.google.com/calendar/ical/YOUR_CALENDAR_ID/private-YOUR_SECRET_TOKEN/basic.ics",
+					},
+				],
+				dateFormat: "MMM Do-HH:mm",
+				fullDayEventDateFormat: "MMM Do",
+				showEnd: false,
+				timeFormat: "absolute",
+				urgency: 0,
+			},
+		},
+		{
+			module: "MMM-GoogleSheetsToDo",
+			position: "top_right",
+			header: "Việc cần làm",
+			config: {
+				spreadsheetUrl: "https://docs.google.com/spreadsheets/d/YOUR_SPREADSHEET_ID/edit?usp=sharing",
+				refreshSeconds: 60,
+				showCheckbox: true,
+				maxWidth: 450,
+				itemLimit: 200,
+				fade: true,
+				fadePoint: 0.5,
+			},
+		},
+		{
 			module: "MMM-OpenWeatherMapForecast",
 			header: "",
 			position: "bottom_center",

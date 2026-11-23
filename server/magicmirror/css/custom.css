@@ -29,6 +29,7 @@ body {
   font-size: 1.7em;
 }
 
+.module.MMM-GoogleSheetsToDo,
 .module.MMM-MicrosoftToDo {
   font-size: 1.8em;
 }

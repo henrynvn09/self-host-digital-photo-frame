@@ -34,6 +34,8 @@ RUN git init MMM-OpenWeatherMapForecast \
     && git checkout --detach FETCH_HEAD \
     && npm install --omit=dev
 
+COPY --chown=node:node modules/MMM-GoogleSheetsToDo /opt/magic_mirror/modules/MMM-GoogleSheetsToDo
+
 WORKDIR /opt/magic_mirror
 
 # Run MagicMirror in headless server-only mode (clients connect on port 8080/8036)
