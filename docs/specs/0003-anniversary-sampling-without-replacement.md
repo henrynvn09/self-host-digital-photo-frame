@@ -64,6 +64,11 @@ Transform the anniversary photo selection into a stateful **Sampling Deck** oper
 - Applying sampling without replacement to unbounded general random searches (which remain stateless random draws).
 - Multi-user distinct view history tracking (the digital photo frame represents a single shared family display).
 
+## Interactive Visualization
+
+The interactive simulation of the multi-round sampling permutation, tail flush boundaries, and day-to-day slice dynamics is hosted at:
+- [docs/visualizations/sampling-permutation.html](file:///Users/ying/code/image-sharing/self-host-digital-photo-frame/docs/visualizations/sampling-permutation.html)
+
 ## Further Notes
 
 - Aligns directly with Architectural Decision Record **ADR 0007 (Random Sampling Without Replacement)** and the canonical glossary definitions in `CONTEXT.md` (`Sampling Deck`, `Exhaustion Cycle`, `Dealt Asset`).

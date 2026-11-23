@@ -37,7 +37,10 @@ An initial proposal evaluated stateful tracking via a database column (`dealt_at
 5. **Pure Stateless Random Fallback**:
    - For global queries without date bounds (`takenAfter == nil && takenBefore == nil`), `photo-api` continues to use `ORDER BY RANDOM() LIMIT ?`.
 
-## Consequences
+## Interactive Visualization
+
+An interactive, self-contained visualizer simulating pool sizing ($N$), request sizing ($K$), multi-round Fisher-Yates shuffles, and tail flush boundaries is available in the repository at:
+- [docs/visualizations/sampling-permutation.html](file:///Users/ying/code/image-sharing/self-host-digital-photo-frame/docs/visualizations/sampling-permutation.html)
 
 - **Pros**:
   - **Zero DB Writes**: Pure read-only queries with no disk writes, lock contention, or transaction rollbacks.
