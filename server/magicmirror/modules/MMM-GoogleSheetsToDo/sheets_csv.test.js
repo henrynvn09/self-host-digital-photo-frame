@@ -7,7 +7,8 @@ const {
 	parseCsvRows,
 	parseCheckboxCell,
 	extractInlineCheckbox,
-	parseTodoCsv
+	parseTodoCsv,
+	formatCalendarEventTime
 } = require("./sheets_csv");
 
 test("normalizeSheetCsvUrl converts Google Sheet edit URLs, raw IDs, published URLs, and sheet names", () => {
@@ -122,5 +123,105 @@ test("parseTodoCsv rejects HTML login pages returned for private sheets", () => 
 	assert.throws(
 		() => parseTodoCsv("<!DOCTYPE html><html><body>Sign in to Google Accounts</body></html>"),
 		/Received HTML instead of CSV/
+	);
+});
+
+test("formatCalendarEventTime formats all-day and timed events in DD/MM for current year and DD/MM/YY across years", () => {
+	function makeMoment(iso) {
+		const d = new Date(iso);
+		const pad = (n) => String(n).padStart(2, "0");
+		return {
+			_d: d,
+			year: () => d.getUTCFullYear(),
+			valueOf: () => d.getTime(),
+			clone: () => makeMoment(d.toISOString()),
+			subtract: (n, unit) => {
+				const ms = unit === "hours" ? n * 3600 * 1000 : (unit === "second" ? n * 1000 : 0);
+				const copy = new Date(d.getTime() - ms);
+				return makeMoment(copy.toISOString());
+			},
+			isBefore: (other) => d.getTime() < other.valueOf(),
+			isSame: (other, unit) => {
+				if (unit === "d") {
+					return d.getUTCFullYear() === other._d.getUTCFullYear() &&
+						d.getUTCMonth() === other._d.getUTCMonth() &&
+						d.getUTCDate() === other._d.getUTCDate();
+				}
+				return d.getTime() === other.valueOf();
+			},
+			format: (fmt) => {
+				const dd = pad(d.getUTCDate());
+				const mm = pad(d.getUTCMonth() + 1);
+				const yy = String(d.getUTCFullYear()).slice(-2);
+				const hh = pad(d.getUTCHours());
+				const min = pad(d.getUTCMinutes());
+				if (fmt === "DD/MM") return `${dd}/${mm}`;
+				if (fmt === "DD/MM/YY") return `${dd}/${mm}/${yy}`;
+				if (fmt === "HH:mm") return `${hh}:${min}`;
+				return fmt;
+			}
+		};
+	}
+
+	const now2026 = makeMoment("2026-11-28T12:00:00Z");
+
+	assert.equal(
+		formatCalendarEventTime({
+			fullDayEvent: true,
+			startMoment: makeMoment("2026-11-25T00:00:00Z"),
+			endMoment: makeMoment("2026-12-09T00:00:00Z"),
+			nowMoment: now2026
+		}),
+		"25/11 - 08/12"
+	);
+
+	assert.equal(
+		formatCalendarEventTime({
+			fullDayEvent: true,
+			startMoment: makeMoment("2026-11-25T00:00:00Z"),
+			endMoment: makeMoment("2026-11-26T00:00:00Z"),
+			nowMoment: now2026
+		}),
+		"25/11"
+	);
+
+	assert.equal(
+		formatCalendarEventTime({
+			fullDayEvent: true,
+			startMoment: makeMoment("2026-12-28T00:00:00Z"),
+			endMoment: makeMoment("2027-01-06T00:00:00Z"),
+			nowMoment: now2026
+		}),
+		"28/12/26 - 05/01/27"
+	);
+
+	assert.equal(
+		formatCalendarEventTime({
+			fullDayEvent: false,
+			startMoment: makeMoment("2026-11-25T19:30:00Z"),
+			endMoment: makeMoment("2026-11-25T20:30:00Z"),
+			nowMoment: now2026
+		}),
+		"25/11 19:30 - 20:30"
+	);
+
+	assert.equal(
+		formatCalendarEventTime({
+			fullDayEvent: false,
+			startMoment: makeMoment("2026-11-25T19:30:00Z"),
+			endMoment: makeMoment("2026-11-26T08:30:00Z"),
+			nowMoment: now2026
+		}),
+		"25/11 19:30 - 26/11 08:30"
+	);
+
+	assert.equal(
+		formatCalendarEventTime({
+			fullDayEvent: false,
+			startMoment: makeMoment("2027-01-10T19:30:00Z"),
+			endMoment: makeMoment("2027-01-10T20:30:00Z"),
+			nowMoment: now2026
+		}),
+		"10/01/27 19:30 - 20:30"
 	);
 });

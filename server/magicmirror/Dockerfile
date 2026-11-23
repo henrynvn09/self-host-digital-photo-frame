@@ -49,6 +49,12 @@ RUN node -e ' \
   let utils = fs.readFileSync("js/utils.js", "utf8"); \
   utils = utils.replace("Log.error(`Could not write config/basepath.js file: ${error.message}`);", "if (error.code !== \"EROFS\") Log.error(`Could not write config/basepath.js file: ${error.message}`);"); \
   fs.writeFileSync("js/utils.js", utils); \
+  let cal = fs.readFileSync("defaultmodules/calendar/calendar.js", "utf8"); \
+  cal = cal.replace( \
+    "buildAbsoluteTimeText (event, eventStartDateMoment, eventEndDateMoment, now) {", \
+    "buildAbsoluteTimeText (event, eventStartDateMoment, eventEndDateMoment, now) { const currentYear = now.year(); if (event.fullDayEvent) { const adjustedEnd = eventEndDateMoment.clone().subtract(12, \"hours\"); const effectiveEnd = adjustedEnd.isBefore(eventStartDateMoment) ? eventStartDateMoment.clone() : adjustedEnd; const dateFmt = (eventStartDateMoment.year() === currentYear && effectiveEnd.year() === currentYear) ? \"DD/MM\" : \"DD/MM/YY\"; return eventStartDateMoment.isSame(effectiveEnd, \"d\") ? eventStartDateMoment.format(dateFmt) : `${eventStartDateMoment.format(dateFmt)} - ${effectiveEnd.format(dateFmt)}`; } const dateFmt = (eventStartDateMoment.year() === currentYear && eventEndDateMoment.year() === currentYear) ? \"DD/MM\" : \"DD/MM/YY\"; if (this.isSameDay(eventStartDateMoment, eventEndDateMoment)) { return this.hasEventDuration(event) ? `${eventStartDateMoment.format(dateFmt)} ${eventStartDateMoment.format(\"HH:mm\")} - ${eventEndDateMoment.format(\"HH:mm\")}` : `${eventStartDateMoment.format(dateFmt)} ${eventStartDateMoment.format(\"HH:mm\")}`; } return `${eventStartDateMoment.format(dateFmt)} ${eventStartDateMoment.format(\"HH:mm\")} - ${eventEndDateMoment.format(dateFmt)} ${eventEndDateMoment.format(\"HH:mm\")}`; }, _origBuildAbsoluteTimeText (event, eventStartDateMoment, eventEndDateMoment, now) {" \
+  ); \
+  fs.writeFileSync("defaultmodules/calendar/calendar.js", cal); \
 '
 
 # Run MagicMirror in headless server-only watch mode (clients connect on port 8080/8036)

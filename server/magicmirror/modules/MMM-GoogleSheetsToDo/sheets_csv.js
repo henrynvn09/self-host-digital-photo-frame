@@ -305,10 +305,39 @@ function parseTodoCsv(csvText, { showCompleted = false, itemLimit = 200 } = {}) 
 	return items;
 }
 
+function formatCalendarEventTime({ fullDayEvent, startMoment, endMoment, nowMoment }) {
+	const currentYear = nowMoment.year();
+
+	if (fullDayEvent) {
+		const adjustedEnd = endMoment.clone().subtract(12, "hours");
+		const effectiveEnd = adjustedEnd.isBefore(startMoment) ? startMoment.clone() : adjustedEnd;
+		const sameYearAsNow = startMoment.year() === currentYear && effectiveEnd.year() === currentYear;
+		const dateFmt = sameYearAsNow ? "DD/MM" : "DD/MM/YY";
+
+		if (startMoment.isSame(effectiveEnd, "d")) {
+			return startMoment.format(dateFmt);
+		}
+		return `${startMoment.format(dateFmt)} - ${effectiveEnd.format(dateFmt)}`;
+	}
+
+	const sameYearAsNow = startMoment.year() === currentYear && endMoment.year() === currentYear;
+	const dateFmt = sameYearAsNow ? "DD/MM" : "DD/MM/YY";
+
+	if (startMoment.isSame(endMoment, "d")) {
+		if (startMoment.valueOf() === endMoment.valueOf()) {
+			return `${startMoment.format(dateFmt)} ${startMoment.format("HH:mm")}`;
+		}
+		return `${startMoment.format(dateFmt)} ${startMoment.format("HH:mm")} - ${endMoment.format("HH:mm")}`;
+	}
+
+	return `${startMoment.format(dateFmt)} ${startMoment.format("HH:mm")} - ${endMoment.format(dateFmt)} ${endMoment.format("HH:mm")}`;
+}
+
 module.exports = {
 	normalizeSheetCsvUrl,
 	parseCsvRows,
 	parseCheckboxCell,
 	extractInlineCheckbox,
-	parseTodoCsv
+	parseTodoCsv,
+	formatCalendarEventTime
 };
