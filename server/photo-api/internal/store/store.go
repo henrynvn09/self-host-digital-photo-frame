@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"hash/fnv"
+	"math/rand"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,7 +14,7 @@ import (
 )
 
 const assetColumns = `id, rel_path, mtime, size, taken_at, taken_year, taken_month, taken_day,
-       city, state, country, album, orientation, width, height, indexed_at, dealt_at`
+       city, state, country, album, orientation, width, height, indexed_at`
 
 type Asset struct {
 	ID          string
@@ -31,7 +33,6 @@ type Asset struct {
 	Width       int
 	Height      int
 	IndexedAt   time.Time
-	DealtAt     *time.Time
 }
 
 type PathMeta struct {
@@ -110,8 +111,7 @@ CREATE TABLE IF NOT EXISTS assets (
 	orientation INTEGER NOT NULL DEFAULT 1,
 	width INTEGER NOT NULL DEFAULT 0,
 	height INTEGER NOT NULL DEFAULT 0,
-	indexed_at TEXT NOT NULL,
-	dealt_at INTEGER
+	indexed_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_assets_taken_at ON assets(taken_at);
 CREATE INDEX IF NOT EXISTS idx_assets_month_day ON assets(taken_month, taken_day, taken_year);
@@ -120,12 +120,6 @@ CREATE INDEX IF NOT EXISTS idx_assets_rel_path ON assets(rel_path);
 	_, err := s.db.Exec(ddl)
 	if err != nil {
 		return fmt.Errorf("migrate sqlite schema: %w", err)
-	}
-
-	// For pre-existing databases without dealt_at column
-	_, _ = s.db.Exec(`ALTER TABLE assets ADD COLUMN dealt_at INTEGER`)
-	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_assets_taken_dealt ON assets(taken_at, dealt_at)`); err != nil {
-		return fmt.Errorf("create idx_assets_taken_dealt: %w", err)
 	}
 	return nil
 }
@@ -261,19 +255,31 @@ func (s *Store) SearchMetadata(ctx context.Context, p SearchParams) (SearchResul
 	return SearchResult{Items: items, Total: total}, nil
 }
 
+const (
+	defaultRandomSize = 100
+	maxRandomSize     = 1000
+)
+
+// SearchRandom returns a deterministic pseudo-random slice of assets for the current day.
 func (s *Store) SearchRandom(ctx context.Context, takenAfter, takenBefore *time.Time, size int) ([]Asset, error) {
 	now := time.Now().UTC()
-	return s.SearchRandomAt(ctx, takenAfter, takenBefore, size, now.YearDay())
+	return s.SearchRandomAtYear(ctx, takenAfter, takenBefore, size, now.YearDay(), now.Year())
 }
 
-// SearchRandomAt performs deterministic pseudorandom sampling without replacement based on dayOfYear.
-// It requires zero database writes, eliminates lock contention, and provides idempotent daily pools.
+// SearchRandomAt performs deterministic multi-round pseudorandom sampling without replacement based on dayOfYear.
+// It uses the current calendar year to salt the seed.
 func (s *Store) SearchRandomAt(ctx context.Context, takenAfter, takenBefore *time.Time, size int, dayOfYear int) ([]Asset, error) {
+	return s.SearchRandomAtYear(ctx, takenAfter, takenBefore, size, dayOfYear, time.Now().UTC().Year())
+}
+
+// SearchRandomAtYear performs deterministic multi-round pseudorandom sampling without replacement with seamless straddle stitch.
+// It requires zero database writes, eliminates lock contention, and provides idempotent daily pools.
+func (s *Store) SearchRandomAtYear(ctx context.Context, takenAfter, takenBefore *time.Time, size int, dayOfYear int, currentYear int) ([]Asset, error) {
 	if size <= 0 {
-		size = 100
+		size = defaultRandomSize
 	}
-	if size > 1000 {
-		size = 1000
+	if size > maxRandomSize {
+		size = maxRandomSize
 	}
 
 	// If no date bounds are specified, maintain pure stateless random sampling across the entire library
@@ -289,82 +295,187 @@ func (s *Store) SearchRandomAt(ctx context.Context, takenAfter, takenBefore *tim
 
 	where, args := buildDateWhere(takenAfter, takenBefore)
 
-	// For anniversary / date-bounded queries: Stateless Deterministic Permutation
-	// 1. Count matching rows in the anniversary window
-	var total int
-	countQ := `SELECT COUNT(*) FROM assets` + where
-	if err := s.db.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
+	allIDs, err := s.listMatchingIDs(ctx, where, args)
+	if err != nil {
 		return nil, err
 	}
+	total := len(allIDs)
 	if total == 0 {
 		return []Asset{}, nil
 	}
 
-	// Under-fill: If fewer assets exist in this window than requested, return all of them
-	if total <= size {
-		q := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY id ASC`, assetColumns, where)
-		rows, err := s.db.QueryContext(ctx, q, args...)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		return scanAssets(rows)
-	}
-
-	// Compute day-based cyclic offset: visits every asset without replacement before looping
 	if dayOfYear <= 0 {
 		dayOfYear = 1
 	}
-	offset := ((dayOfYear - 1) * size) % total
 
-	// Query deterministic slice
-	if offset+size <= total {
-		q := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY id ASC LIMIT ? OFFSET ?`, assetColumns, where)
-		qArgs := append(append([]any{}, args...), size, offset)
-		rows, err := s.db.QueryContext(ctx, q, qArgs...)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		return scanAssets(rows)
+	// Under-fill: If total matching assets in this window <= requested size,
+	// return all assets permuted with a daily seed so order is never frozen/static
+	if total <= size {
+		deck := permuteIDs(allIDs, currentYear, takenAfter, takenBefore, dayOfYear-1)
+		return s.getAssetsByIDs(ctx, deck)
 	}
 
-	// Wraparound slice: take remaining items to end of array + items from beginning
-	firstCount := total - offset
-	q1 := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY id ASC LIMIT ? OFFSET ?`, assetColumns, where)
-	q1Args := append(append([]any{}, args...), firstCount, offset)
-	rows1, err := s.db.QueryContext(ctx, q1, q1Args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows1.Close()
-	items1, err := scanAssets(rows1)
-	if err != nil {
-		return nil, err
+	// Multi-Round Virtual Concatenated Tape with Seamless Straddle Stitch:
+	globalStart := (dayOfYear - 1) * size
+	round1 := globalStart / total
+	offset1 := globalStart % total
+
+	deck1 := getRoundDeck(allIDs, currentYear, takenAfter, takenBefore, size, round1)
+
+	var targetIDs []string
+	if offset1+size <= total {
+		// Single-round slice: completely contained in round1
+		targetIDs = deck1[offset1 : offset1+size]
+	} else {
+		// Seamless Straddle Stitch:
+		// Part 1: take remaining items from round1 (exhausts round1 cleanly)
+		part1 := deck1[offset1:]
+
+		// Part 2: advance to round2 = round1 + 1 (freshly shuffled with round2 seed)
+		round2 := round1 + 1
+		deck2 := getRoundDeck(allIDs, currentYear, takenAfter, takenBefore, size, round2)
+		needed := size - len(part1)
+		part2 := deck2[:needed]
+
+		targetIDs = make([]string, 0, size)
+		targetIDs = append(targetIDs, part1...)
+		targetIDs = append(targetIDs, part2...)
 	}
 
-	secondCount := size - firstCount
-	q2 := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY id ASC LIMIT ? OFFSET 0`, assetColumns, where)
-	q2Args := append(append([]any{}, args...), secondCount)
-	rows2, err := s.db.QueryContext(ctx, q2, q2Args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows2.Close()
-	items2, err := scanAssets(rows2)
-	if err != nil {
-		return nil, err
-	}
-
-	return append(items1, items2...), nil
+	return s.getAssetsByIDs(ctx, targetIDs)
 }
 
-// ResetDealt clears dealt timestamps for assets within the specified date window (or all assets if nil).
-func (s *Store) ResetDealt(ctx context.Context, takenAfter, takenBefore *time.Time) error {
-	where, args := buildDateWhere(takenAfter, takenBefore)
-	q := `UPDATE assets SET dealt_at = NULL` + where
-	_, err := s.db.ExecContext(ctx, q, args...)
-	return err
+func (s *Store) listMatchingIDs(ctx context.Context, where string, args []any) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM assets`+where+` ORDER BY id ASC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var allIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		allIDs = append(allIDs, id)
+	}
+	return allIDs, rows.Err()
+}
+
+func getRoundDeck(allIDs []string, currentYear int, takenAfter, takenBefore *time.Time, size int, targetRound int) []string {
+	total := len(allIDs)
+	if total <= size || targetRound == 0 {
+		return permuteIDs(allIDs, currentYear, takenAfter, takenBefore, targetRound)
+	}
+
+	stepGcd := gcd(total, size)
+	period := size / stepGcd
+	startRound := targetRound - (targetRound % period)
+
+	currentDeck := permuteIDs(allIDs, currentYear, takenAfter, takenBefore, startRound)
+	if startRound == targetRound {
+		return currentDeck
+	}
+
+	for r := startRound + 1; r <= targetRound; r++ {
+		tailCount := (r * total) % size
+		nextDeck := permuteIDs(allIDs, currentYear, takenAfter, takenBefore, r)
+		if tailCount == 0 {
+			currentDeck = nextDeck
+			continue
+		}
+
+		tailItems := make(map[string]bool, tailCount)
+		for _, id := range currentDeck[total-tailCount:] {
+			tailItems[id] = true
+		}
+
+		headNeeded := size - tailCount
+		j := headNeeded
+		for i := 0; i < headNeeded; i++ {
+			if tailItems[nextDeck[i]] {
+				for j < total && tailItems[nextDeck[j]] {
+					j++
+				}
+				if j < total {
+					nextDeck[i], nextDeck[j] = nextDeck[j], nextDeck[i]
+					j++
+				}
+			}
+		}
+		currentDeck = nextDeck
+	}
+
+	return currentDeck
+}
+
+func gcd(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
+}
+
+func permuteIDs(ids []string, currentYear int, takenAfter, takenBefore *time.Time, round int) []string {
+	deck := make([]string, len(ids))
+	copy(deck, ids)
+
+	var afterStr, beforeStr string
+	if takenAfter != nil {
+		afterStr = takenAfter.UTC().Format(time.RFC3339)
+	}
+	if takenBefore != nil {
+		beforeStr = takenBefore.UTC().Format(time.RFC3339)
+	}
+
+	h := fnv.New64a()
+	_, _ = fmt.Fprintf(h, "%d|%s|%s|%d", currentYear, afterStr, beforeStr, round)
+	seed := int64(h.Sum64())
+
+	r := rand.New(rand.NewSource(seed))
+	r.Shuffle(len(deck), func(i, j int) {
+		deck[i], deck[j] = deck[j], deck[i]
+	})
+	return deck
+}
+
+func (s *Store) getAssetsByIDs(ctx context.Context, ids []string) ([]Asset, error) {
+	if len(ids) == 0 {
+		return []Asset{}, nil
+	}
+
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	q := fmt.Sprintf(`SELECT %s FROM assets WHERE id IN (%s)`, assetColumns, strings.Join(placeholders, ","))
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	assets, err := scanAssets(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	byID := make(map[string]Asset, len(assets))
+	for _, a := range assets {
+		byID[a.ID] = a
+	}
+
+	ordered := make([]Asset, 0, len(ids))
+	for _, id := range ids {
+		if a, ok := byID[id]; ok {
+			ordered = append(ordered, a)
+		}
+	}
+	return ordered, nil
 }
 
 func (s *Store) MemoriesForDate(ctx context.Context, month, day, currentYear int) ([]Asset, error) {
@@ -401,23 +512,17 @@ type rowScanner interface {
 func scanAsset(r rowScanner) (Asset, error) {
 	var a Asset
 	var takenStr, indexedStr string
-	var dealtAtVal sql.NullInt64
 	err := r.Scan(
 		&a.ID, &a.RelPath, &a.Mtime, &a.Size,
 		&takenStr, &a.TakenYear, &a.TakenMonth, &a.TakenDay,
 		&a.City, &a.State, &a.Country, &a.Album,
 		&a.Orientation, &a.Width, &a.Height, &indexedStr,
-		&dealtAtVal,
 	)
 	if err != nil {
 		return Asset{}, err
 	}
 	a.TakenAt, _ = time.Parse(time.RFC3339, takenStr)
 	a.IndexedAt, _ = time.Parse(time.RFC3339, indexedStr)
-	if dealtAtVal.Valid {
-		t := time.Unix(dealtAtVal.Int64, 0).UTC()
-		a.DealtAt = &t
-	}
 	return a, nil
 }
 
