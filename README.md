@@ -5,7 +5,7 @@ A self-hosted 27-inch 2K family photo frame powered by a Synology NAS (`server/`
 ## Features
 
 - **Native 2K photo slideshow (`photo-api` + `MMM-ImmichSlideShow`)**: Reads your Synology Photos folder in read-only mode (`:ro`), converts JPEG, PNG, WebP, and iPhone `.heic` photos on demand into a 1 GB LRU cache, tags photos with offline city names, and alternates between Anniversary photos (within 45 days across past years) and Random photos.
-- **Google Calendar appointments (`CUỘC HẸN SẮP TỚI`)**: Pulls upcoming family events every hour from a Google Calendar share link (`?cid=...`) or secret `.ics` link.
+- **Google Calendar appointments (`CUỘC HẸN SẮP TỚI`)**: Pulls upcoming family events every minute from a Google Calendar share link (`?cid=...`) or secret `.ics` link.
 - **Google Sheets checklist (`Việc cần làm`)**: Pulls active to-do items every minute directly from a shared Google Spreadsheet (using [`todo-template.csv`](./server/magicmirror/config/todo-template.csv)) with no OAuth tokens required. Checking a box in Google Sheets hides the task on the frame within 60 seconds.
 - **World clock and weather forecast**: Shows local date and time, secondary timezone (`VIETNAM`), and a multi-day OpenWeatherMap forecast at the bottom of the screen.
 - **Schedule and motion power saving (`client/`)**: Runs the display only during configured weekday and weekend hours and powers the monitor off after 5 minutes without motion on the GPIO PIR sensor.
@@ -64,7 +64,7 @@ A self-hosted 27-inch 2K family photo frame powered by a Synology NAS (`server/`
 | What you want to change | File to edit | How it takes effect |
 | :--- | :--- | :--- |
 | Add or check off to-do items | Your Google Sheet | Updates on screen within 1 minute |
-| Add or edit calendar events | Your Google Calendar | Updates on screen within 1 hour |
+| Add or edit calendar events | Your Google Calendar | Updates on screen within 1 minute |
 | Widget URLs, poll intervals, slideshow speed/mode, or weather location | `server/magicmirror/config/config.js` | Live-reloads connected displays automatically within 2 seconds |
 | Font sizes, margins, or card opacity | `server/magicmirror/config/custom.css` | Live-reloads connected displays automatically within 2 seconds |
 | Display active hours (`MONDAY_FRIDAY`, `SATURDAY_SUNDAY`) or PIR timeout (`PIR_TIMEOUT_MINUTES`) | `client/config.conf` | Reloads automatically on the Pi every hour (or immediately with `sudo systemctl restart digitalframe.service`) |
