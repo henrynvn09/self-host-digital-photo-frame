@@ -1,24 +1,30 @@
 # Self-Hosted Digital Photo Frame
 
-A self-hosted 27-inch 2K family photo frame powered by a Synology NAS (`server/`) and a Raspberry Pi (`client/`). It replaces a 2 to 4 GB Immich stack with a ~20 MB pure-Go photo indexer, a Dockerized MagicMirror² display server, and a motion-aware WebKitGTK kiosk client.
+A lightweight, self-hosted digital photo frame for a 27-inch 2K monitor powered by a Synology NAS (`server/`) and a Raspberry Pi (`client/`). It syncs Google Calendar, a Google Sheets to-do checklist, weather, world clock, and displays native 2K photos from your NAS with PIR motion sensor power control.
+
+<img src="https://github.com/user-attachments/assets/06a367d3-47bb-4454-9f28-7fd8bd04826f" height="500">
 
 ## Features
 
-- **Native 2K photo slideshow (`photo-api` + `MMM-ImmichSlideShow`)**: Reads your Synology Photos folder in read-only mode (`:ro`), converts JPEG, PNG, WebP, and iPhone `.heic` photos on demand into a 1 GB LRU cache, tags photos with offline city names, and alternates between Anniversary photos (within 45 days across past years) and Random photos.
-- **Google Calendar appointments (`CUỘC HẸN SẮP TỚI`)**: Pulls upcoming family events every minute from a Google Calendar share link (`?cid=...`) or secret `.ics` link.
-- **Google Sheets checklist (`Việc cần làm`)**: Pulls active to-do items every minute directly from a shared Google Spreadsheet (using [`todo-template.csv`](./server/magicmirror/config/todo-template.csv)) with no OAuth tokens required. Checking a box in Google Sheets hides the task on the frame within 60 seconds.
-- **World clock and weather forecast**: Shows local date and time, secondary timezone (`VIETNAM`), and a multi-day OpenWeatherMap forecast at the bottom of the screen.
-- **Schedule and motion power saving (`client/`)**: Runs the display only during configured weekday and weekend hours and powers the monitor off after 5 minutes without motion on the GPIO PIR sensor.
-- **Live configuration reload**: Mounts `server/magicmirror/config/` as a watched folder so edits to `config.js` or `custom.css` refresh the display in about 1 second without restarting Docker. The Raspberry Pi also re-reads `client/config.conf` once every hour.
+- 🖼️ **2K Photo Slideshow** - Lightweight pure-Go `photo-api` (~20 MB RAM) reads your Synology Photos folder read-only (`:ro`), caches 2K JPEG previews (including `.heic`) in a 1 GB LRU cache, and tags photos with offline city names
+- 📅 **Google Calendar** - Shows upcoming events in Vietnamese (`CUỘC HẸN SẮP TỚI`) with `DD/MM` start-end dates and 24-hour times, synced every minute from a Google Calendar share link or `.ics` feed
+- ✅ **Google Sheets To-Do** - Displays your checklist (`Việc cần làm`) synced every minute directly from a shared Google Spreadsheet ([`todo-template.csv`](./server/magicmirror/config/todo-template.csv)) with zero OAuth tokens
+- 🌤️ **Weather Forecast** - Multi-day OpenWeatherMap integration
+- 🌍 **World Clock** - Shows Vietnam time with flag
+- ⚡ **Live Config Reload** - Edits to `server/magicmirror/config/config.js` or `custom.css` reload connected displays automatically within 2 seconds without restarting Docker
+- 👋 **PIR Motion Sensor** - Automatically turns the display on/off based on motion on GPIO pin 24
+- ⏰ **Auto Scheduling** - Schedule-aware systemd service with separate weekday/weekend hours and hourly live config reload
+- 🔄 **Auto-Restart** - Automatically recovers from crashes via systemd and WebKitGTK auto-retry
 
 ## Architecture
 
-1. **`server/` (Synology NAS)**: A single `docker-compose.yml` running two containers on a private bridge network:
-   - `photo-api` (internal port `2283`): Indexes `/photos:ro` into SQLite and serves 2K JPEG previews.
-   - `magicmirror` (host port `8036`): Serves the MagicMirror² UI, top-bar widgets, weather, and photo slideshow.
-2. **`client/` (Raspberry Pi)**: Connects to `http://<nas-ip>:8036` in a fullscreen WebKitGTK window (`kiosk.py`) managed by the schedule daemon (`frame.sh`) and PIR motion script (`pir.py`).
+- **Server (Synology NAS)**: Single `server/docker-compose.yml` running `photo-api` (internal port `2283`) and `magicmirror` (port `8036`) on a private Docker network (~150 MB total RAM)
+- **Client (Raspberry Pi 4)**: Lightweight fullscreen WebKitGTK kiosk (`client/kiosk.py`, ~120 MB RAM) connecting to `http://<nas-ip>:8036`
+- **Display Control**: Event-driven PIR motion sensor on GPIO pin 24 (`client/pir.py`) with Bookworm X11 DPMS (`xset`) and `vcgencmd` fallback
 
-## Step 1. Set up the Synology NAS (`server/`)
+---
+
+## Step 1. Set Up the Synology NAS (`server/`)
 
 1. SSH into your NAS and find your user and group IDs:
    ```bash
@@ -38,7 +44,7 @@ A self-hosted 27-inch 2K family photo frame powered by a Synology NAS (`server/`
 4. Edit `server/magicmirror/config/config.js`:
    - Set `apiKey` in both `MMM-ImmichSlideShow` blocks to match `API_KEY` from `server/.env`.
    - Paste your Google Calendar share link (`https://calendar.google.com/calendar/u/0?cid=...`) or `.ics` link into `resolveGoogleCalendarUrl(...)` under `calendar`.
-   - Import [`server/magicmirror/config/todo-template.csv`](./server/magicmirror/config/todo-template.csv) into Google Sheets, insert checkboxes in Column A (**Insert > Checkbox**), share the sheet as **Anyone with the link (Viewer)**, and paste its URL into `spreadsheetUrl` under `MMM-GoogleSheetsToDo`.
+   - Import [`server/magicmirror/config/todo-template.csv`](./server/magicmirror/config/todo-template.csv) into Google Sheets (**Insert > Checkbox** on Column A), share as **Anyone with the link (Viewer)**, and paste its URL into `spreadsheetUrl` under `MMM-GoogleSheetsToDo`.
    - Set your OpenWeatherMap `apikey`, `latitude`, and `longitude` under `MMM-OpenWeatherMapForecast`.
 5. Build and start the containers:
    ```bash
@@ -46,7 +52,7 @@ A self-hosted 27-inch 2K family photo frame powered by a Synology NAS (`server/`
    ```
    Verify the display in any browser at `http://<nas-ip>:8036`.
 
-## Step 2. Set up the Raspberry Pi (`client/`)
+## Step 2. Set Up the Raspberry Pi (`client/`)
 
 1. Copy the client config template and set `SERVER_IP` to your NAS IP address:
    ```bash
@@ -54,12 +60,12 @@ A self-hosted 27-inch 2K family photo frame powered by a Synology NAS (`server/`
    cp config.conf.sample config.conf
    nano config.conf
    ```
-2. Run the installer to install WebKitGTK and enable the `digitalframe.service` systemd unit:
+2. Run the installer to install WebKitGTK, GPIO packages (`python3-gpiozero`, `python3-lgpio`), and enable `digitalframe.service`:
    ```bash
    ./install.sh
    ```
 
-## Updating settings later
+## Updating Settings Later
 
 | What you want to change | File to edit | How it takes effect |
 | :--- | :--- | :--- |
@@ -70,10 +76,36 @@ A self-hosted 27-inch 2K family photo frame powered by a Synology NAS (`server/`
 | Display active hours (`MONDAY_FRIDAY`, `SATURDAY_SUNDAY`) or PIR timeout (`PIR_TIMEOUT_MINUTES`) | `client/config.conf` | Reloads automatically on the Pi every hour (or immediately with `sudo systemctl restart digitalframe.service`) |
 | NAS photo folder path or cache size | `server/.env` | Run `docker compose up -d` in `server/` |
 
-## Folder guides
+## Folder Guides
 
-- [`server/README.md`](./server/README.md): NAS Docker Compose commands and troubleshooting.
-- [`server/magicmirror/README.md`](./server/magicmirror/README.md): MagicMirror modules, widget options, and custom CSS.
-- [`server/photo-api/README.md`](./server/photo-api/README.md): Go photo API environment variables, endpoints, and tests.
-- [`client/README.md`](./client/README.md): Raspberry Pi commands, logs, and portrait rotation.
-- [`PRD.md`](./PRD.md): Architecture details and performance design.
+- [`server/README.md`](./server/README.md) - NAS Docker Compose commands and stack overview
+- [`server/magicmirror/README.md`](./server/magicmirror/README.md) - MagicMirror modules, widget options, and custom CSS
+- [`server/photo-api/README.md`](./server/photo-api/README.md) - Go photo API environment variables, endpoints, and tests
+- [`client/README.md`](./client/README.md) - Raspberry Pi commands, PIR sensor wiring, and troubleshooting
+- [`PRD.md`](./PRD.md) - Architecture details and performance design
+
+---
+
+## Contributing
+
+This is a personal project, but feel free to contribute!
+
+## License
+
+MIT License - See repository for details
+
+## Credits
+
+- [MagicMirror²](https://magicmirror.builders/) - Open source smart mirror platform
+- [MMM-ImmichSlideShow](https://github.com/pelaxa/MMM-ImmichSlideShow) - Photo slideshow integration
+- [MMM-Worldclock](https://github.com/ulrichwisser/MMM-Worldclock) - Secondary timezone display
+- [MMM-OpenWeatherMapForecast](https://github.com/henrynvn09/MMM-OpenWeatherMapForecast) - Weather forecast
+- Community modules and contributors
+
+## Support
+
+For issues or questions:
+
+1. Check [AGENTS.md](./AGENTS.md) for repository overview and agent guidelines
+2. Review the [Troubleshooting](./client/README.md#troubleshooting) section in `client/README.md` (PIR sensor, display power, server connectivity, and journald logs)
+3. Check logs: `journalctl -fu digitalframe.service`
