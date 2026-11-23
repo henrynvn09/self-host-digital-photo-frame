@@ -2,6 +2,7 @@ package preview
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"fmt"
 	"image"
@@ -21,16 +22,113 @@ import (
 )
 
 type Options struct {
-	MaxWidth    int
-	MaxHeight   int
-	JPEGQuality int
-	MaxMB       int64
-	PrebakeBlur bool
-	FrameWidth  int
-	FrameHeight int
+	Mode                 string // "memory", "disk", "hybrid" (default: "memory")
+	MaxWidth             int
+	MaxHeight            int
+	JPEGQuality          int
+	MaxMB                int64
+	PrebakeBlur          bool
+	FrameWidth           int
+	FrameHeight          int
+	MaxConcurrentDecodes int
+}
+
+type Result struct {
+	Data []byte
+	Path string
+}
+
+type lruEntry struct {
+	key       string
+	data      []byte
+	size      int64
+	updatedAt time.Time
+}
+
+type MemoryLRU struct {
+	mu        sync.Mutex
+	maxBytes  int64
+	curBytes  int64
+	items     map[string]*list.Element
+	evictList *list.List
+}
+
+func NewMemoryLRU(maxBytes int64) *MemoryLRU {
+	return &MemoryLRU{
+		maxBytes:  maxBytes,
+		items:     make(map[string]*list.Element),
+		evictList: list.New(),
+	}
+}
+
+func (m *MemoryLRU) Get(key string) ([]byte, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	elem, ok := m.items[key]
+	if !ok {
+		return nil, false
+	}
+	m.evictList.MoveToFront(elem)
+	entry := elem.Value.(*lruEntry)
+	entry.updatedAt = time.Now()
+	return entry.data, true
+}
+
+func (m *MemoryLRU) Put(key string, data []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	size := int64(len(data))
+	if elem, ok := m.items[key]; ok {
+		m.evictList.MoveToFront(elem)
+		entry := elem.Value.(*lruEntry)
+		m.curBytes += size - entry.size
+		entry.data = data
+		entry.size = size
+		entry.updatedAt = time.Now()
+	} else {
+		entry := &lruEntry{
+			key:       key,
+			data:      data,
+			size:      size,
+			updatedAt: time.Now(),
+		}
+		elem := m.evictList.PushFront(entry)
+		m.items[key] = elem
+		m.curBytes += size
+	}
+
+	for m.curBytes > m.maxBytes && m.evictList.Len() > 0 {
+		oldest := m.evictList.Back()
+		if oldest == nil {
+			break
+		}
+		m.evictList.Remove(oldest)
+		oldEntry := oldest.Value.(*lruEntry)
+		delete(m.items, oldEntry.key)
+		m.curBytes -= oldEntry.size
+	}
+}
+
+func (m *MemoryLRU) Remove(key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if elem, ok := m.items[key]; ok {
+		m.evictList.Remove(elem)
+		entry := elem.Value.(*lruEntry)
+		delete(m.items, key)
+		m.curBytes -= entry.size
+	}
+}
+
+func (m *MemoryLRU) Stats() (count int, bytes int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.items), m.curBytes
 }
 
 type Cache struct {
+	mode        string
 	cacheDir    string
 	maxWidth    int
 	maxHeight   int
@@ -40,15 +138,28 @@ type Cache struct {
 	frameWidth  int
 	frameHeight int
 
+	memLRU  *MemoryLRU
+	sem     chan struct{}
 	sf      singleflight.Group
 	evictMu sync.Mutex
 }
 
 func NewCache(dataDir string, opts Options) (*Cache, error) {
-	cacheDir := filepath.Join(dataDir, "cache")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create preview cache dir %s: %w", cacheDir, err)
+	mode := strings.ToLower(strings.TrimSpace(opts.Mode))
+	if mode == "" {
+		mode = "memory"
 	}
+	if mode != "memory" && mode != "disk" && mode != "hybrid" {
+		mode = "memory"
+	}
+
+	cacheDir := filepath.Join(dataDir, "cache")
+	if mode != "memory" {
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			return nil, fmt.Errorf("create preview cache dir %s: %w", cacheDir, err)
+		}
+	}
+
 	if opts.MaxWidth <= 0 {
 		opts.MaxWidth = 2560
 	}
@@ -67,15 +178,24 @@ func NewCache(dataDir string, opts Options) (*Cache, error) {
 	if opts.FrameHeight <= 0 {
 		opts.FrameHeight = 2560
 	}
+	maxConcurrent := opts.MaxConcurrentDecodes
+	if maxConcurrent <= 0 {
+		maxConcurrent = 2
+	}
+
+	maxBytes := opts.MaxMB * 1024 * 1024
 	return &Cache{
+		mode:        mode,
 		cacheDir:    cacheDir,
 		maxWidth:    opts.MaxWidth,
 		maxHeight:   opts.MaxHeight,
 		jpegQuality: opts.JPEGQuality,
-		maxBytes:    opts.MaxMB * 1024 * 1024,
+		maxBytes:    maxBytes,
 		prebakeBlur: opts.PrebakeBlur,
 		frameWidth:  opts.FrameWidth,
 		frameHeight: opts.FrameHeight,
+		memLRU:      NewMemoryLRU(maxBytes),
+		sem:         make(chan struct{}, maxConcurrent),
 	}, nil
 }
 
@@ -87,14 +207,46 @@ func (c *Cache) cachePath(assetID string) string {
 	return filepath.Join(c.cacheDir, prefix, assetID+".jpg")
 }
 
-// GetOrGenerate returns the path to a cached 2K JPEG Preview for the asset,
-// generating and caching it lazily on first request with singleflight coalescing.
-func (c *Cache) GetOrGenerate(ctx context.Context, assetID, sourcePath string, orientation int) (string, error) {
+// GetOrGenerate returns the preview JPEG for the asset (either in-memory bytes or disk file path).
+func (c *Cache) GetOrGenerate(ctx context.Context, assetID, sourcePath string, orientation int) (Result, error) {
+	switch c.mode {
+	case "disk":
+		return c.getOrGenerateDisk(ctx, assetID, sourcePath, orientation)
+	case "hybrid":
+		return c.getOrGenerateHybrid(ctx, assetID, sourcePath, orientation)
+	default:
+		return c.getOrGenerateMemory(ctx, assetID, sourcePath, orientation)
+	}
+}
+
+func (c *Cache) getOrGenerateMemory(ctx context.Context, assetID, sourcePath string, orientation int) (Result, error) {
+	if data, ok := c.memLRU.Get(assetID); ok && len(data) > 0 {
+		return Result{Data: data}, nil
+	}
+
+	val, err, _ := c.sf.Do(assetID, func() (any, error) {
+		if data, ok := c.memLRU.Get(assetID); ok && len(data) > 0 {
+			return data, nil
+		}
+		data, err := c.generateBytes(ctx, sourcePath, orientation)
+		if err != nil {
+			return nil, err
+		}
+		c.memLRU.Put(assetID, data)
+		return data, nil
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{Data: val.([]byte)}, nil
+}
+
+func (c *Cache) getOrGenerateDisk(ctx context.Context, assetID, sourcePath string, orientation int) (Result, error) {
 	target := c.cachePath(assetID)
 	if info, err := os.Stat(target); err == nil && info.Size() > 0 {
 		now := time.Now()
 		_ = os.Chtimes(target, now, now)
-		return target, nil
+		return Result{Path: target}, nil
 	}
 
 	val, err, _ := c.sf.Do(assetID, func() (any, error) {
@@ -103,27 +255,74 @@ func (c *Cache) GetOrGenerate(ctx context.Context, assetID, sourcePath string, o
 			_ = os.Chtimes(target, now, now)
 			return target, nil
 		}
-		if err := c.generate(ctx, sourcePath, target, orientation); err != nil {
+		data, err := c.generateBytes(ctx, sourcePath, orientation)
+		if err != nil {
 			return "", err
 		}
-		c.enforceLimit(target)
+		if err := c.writeToDisk(target, data); err != nil {
+			return "", err
+		}
+		c.enforceDiskLimit(target)
 		return target, nil
 	})
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
-	return val.(string), nil
+	return Result{Path: val.(string)}, nil
 }
 
-// Evict removes a cached preview if present.
+func (c *Cache) getOrGenerateHybrid(ctx context.Context, assetID, sourcePath string, orientation int) (Result, error) {
+	if data, ok := c.memLRU.Get(assetID); ok && len(data) > 0 {
+		return Result{Data: data}, nil
+	}
+
+	target := c.cachePath(assetID)
+	if info, err := os.Stat(target); err == nil && info.Size() > 0 {
+		data, err := os.ReadFile(target)
+		if err == nil && len(data) > 0 {
+			c.memLRU.Put(assetID, data)
+			now := time.Now()
+			_ = os.Chtimes(target, now, now)
+			return Result{Data: data, Path: target}, nil
+		}
+	}
+
+	val, err, _ := c.sf.Do(assetID, func() (any, error) {
+		if data, ok := c.memLRU.Get(assetID); ok && len(data) > 0 {
+			return data, nil
+		}
+		data, err := c.generateBytes(ctx, sourcePath, orientation)
+		if err != nil {
+			return nil, err
+		}
+		c.memLRU.Put(assetID, data)
+		_ = c.writeToDisk(target, data)
+		c.enforceDiskLimit(target)
+		return data, nil
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{Data: val.([]byte), Path: target}, nil
+}
+
+// Evict removes a cached preview from memory and disk if present.
 func (c *Cache) Evict(assetID string) {
+	c.memLRU.Remove(assetID)
 	_ = os.Remove(c.cachePath(assetID))
 }
 
-func (c *Cache) generate(ctx context.Context, sourcePath, targetPath string, orientation int) error {
+func (c *Cache) generateBytes(ctx context.Context, sourcePath string, orientation int) ([]byte, error) {
+	select {
+	case c.sem <- struct{}{}:
+		defer func() { <-c.sem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
 	img, err := decodeImage(ctx, sourcePath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if orientation > 1 && orientation <= 8 {
@@ -136,17 +335,19 @@ func (c *Cache) generate(ctx context.Context, sourcePath, targetPath string, ori
 		img = fitWithin(img, c.maxWidth, c.maxHeight)
 	}
 
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: c.jpegQuality}); err != nil {
+		return nil, fmt.Errorf("encode preview jpeg: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+func (c *Cache) writeToDisk(targetPath string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return err
 	}
-
-	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: c.jpegQuality}); err != nil {
-		return fmt.Errorf("encode preview jpeg: %w", err)
-	}
-
 	tmpPath := targetPath + ".tmp"
-	if err := os.WriteFile(tmpPath, buf.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
 		return err
 	}
 	return os.Rename(tmpPath, targetPath)
@@ -226,8 +427,6 @@ func compositeBlurredFrame(src image.Image, frameW, frameH int) image.Image {
 		return src
 	}
 
-	// 1. Build a fast blurred + darkened cover background by scaling down to a tiny grid,
-	// applying 2 box-blur passes, darkening by ~30%, and scaling up to frameW x frameH.
 	smallW := 64
 	smallH := max(16, int(float64(smallW)*float64(frameH)/float64(frameW)+0.5))
 
@@ -248,7 +447,6 @@ func compositeBlurredFrame(src image.Image, frameW, frameH int) image.Image {
 	canvas := image.NewRGBA(image.Rect(0, 0, frameW, frameH))
 	draw.BiLinear.Scale(canvas, canvas.Bounds(), small, small.Bounds(), draw.Src, nil)
 
-	// 2. Scale the foreground image to fit within frameW x frameH and center it.
 	scaleContain := float64(frameW) / float64(srcW)
 	if sH := float64(frameH) / float64(srcH); sH < scaleContain {
 		scaleContain = sH
@@ -345,7 +543,7 @@ type cachedFile struct {
 	mtime time.Time
 }
 
-func (c *Cache) enforceLimit(keepPath string) {
+func (c *Cache) enforceDiskLimit(keepPath string) {
 	c.evictMu.Lock()
 	defer c.evictMu.Unlock()
 

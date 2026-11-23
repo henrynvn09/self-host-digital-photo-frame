@@ -3,6 +3,8 @@ services:
     build:
       context: ./photo-api
     container_name: photo-api
+    mem_limit: 1300m
+    memswap_limit: 1300m
     # Match your Synology DSM user/group so DSM ACLs allow reading /photos:ro and writing /data.
     # Run `id <your-dsm-username>` via SSH on your NAS (commonly 1026:100 on Synology).
     user: "${PUID:-1026}:${PGID:-100}"
@@ -18,14 +20,17 @@ services:
       - MAX_WIDTH=${MAX_WIDTH:-2560}
       - MAX_HEIGHT=${MAX_HEIGHT:-2560}
       - JPEG_QUALITY=${JPEG_QUALITY:-88}
+      - GOMEMLIMIT=1200MiB
+      - CACHE_MODE=${CACHE_MODE:-memory}
       - CACHE_MAX_MB=${CACHE_MAX_MB:-1024}
+      - MAX_CONCURRENT_DECODES=${MAX_CONCURRENT_DECODES:-2}
       - PREBAKE_BLUR=${PREBAKE_BLUR:-false}
       - FRAME_WIDTH=${FRAME_WIDTH:-1440}
       - FRAME_HEIGHT=${FRAME_HEIGHT:-2560}
     volumes:
       # Read-only mount: container can NEVER modify or delete your original Synology Photos
       - ${PHOTOS_PATH:-/volume1/photo}:/photos:ro
-      # Writable mount: stores SQLite metadata index and 1GB LRU 2K preview cache
+      # Writable mount: stores SQLite metadata index (preview cache runs in 1GB RAM)
       - ${DATA_PATH:-/volume1/docker/photoframe/data}:/data
     networks:
       - photoframe_net

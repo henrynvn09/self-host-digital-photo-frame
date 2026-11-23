@@ -38,7 +38,7 @@ WORKDIR /app
 COPY --from=builder /out/photo-api /usr/local/bin/photo-api
 COPY --from=geonames /geonames /app/geonames
 
-ENV GOMEMLIMIT=256MiB
+ENV GOMEMLIMIT=1200MiB
 
 EXPOSE 2283
 

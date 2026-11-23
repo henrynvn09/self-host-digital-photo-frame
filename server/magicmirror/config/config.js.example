@@ -120,7 +120,7 @@ let config = {
 						anniversaryDatesForward: 45,
 						anniversaryStartYear: 2010,
 						anniversaryEndYear: 2026,
-						querySize: 20,
+						querySize: 100,
 						sortImagesBy: "random",
 						imageInfo: ["date", "geo", "count", "album"],
 						dateFormat: "DD-MM-YYYY dddd HH:mm",

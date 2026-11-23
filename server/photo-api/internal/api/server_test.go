@@ -35,7 +35,7 @@ type testEnv struct {
 	httpHandler http.Handler
 }
 
-func setupTestEnv(t *testing.T, cacheMaxMB int64) *testEnv {
+func setupTestEnv(t *testing.T, cacheMaxMB int64, cacheMode ...string) *testEnv {
 	t.Helper()
 	photosDir := t.TempDir()
 	dataDir := t.TempDir()
@@ -49,7 +49,13 @@ func setupTestEnv(t *testing.T, cacheMaxMB int64) *testEnv {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
+	mode := "memory"
+	if len(cacheMode) > 0 && cacheMode[0] != "" {
+		mode = cacheMode[0]
+	}
+
 	cache, err := preview.NewCache(dataDir, preview.Options{
+		Mode:        mode,
 		MaxWidth:    2560,
 		MaxHeight:   2560,
 		JPEGQuality: 88,
@@ -331,7 +337,7 @@ func TestEndToEndPhotoAPI(t *testing.T) {
 
 func TestPreviewCacheLRUEviction(t *testing.T) {
 	// 1MB cap: generate multiple noisy 2K JPEGs (~250KB+ each) and verify oldest is evicted
-	env := setupTestEnv(t, 1)
+	env := setupTestEnv(t, 1, "disk")
 
 	var names []string
 	for i := 0; i < 6; i++ {

@@ -17,29 +17,33 @@ type Config struct {
 	ExcludePatterns []string
 	MaxWidth        int
 	MaxHeight       int
-	JPEGQuality     int
-	CacheMaxMB      int64
-	PrebakeBlur     bool
-	FrameWidth      int
-	FrameHeight     int
+	JPEGQuality          int
+	CacheMaxMB           int64
+	CacheMode            string
+	PrebakeBlur          bool
+	FrameWidth           int
+	FrameHeight          int
+	MaxConcurrentDecodes int
 }
 
 func Load() Config {
 	return Config{
-		Port:            getEnv("PORT", "2283"),
-		LibraryDir:      getEnv("PHOTOS_DIR", "/photos"),
-		DataDir:         getEnv("DATA_DIR", "/data"),
-		GeoNamesDir:     getEnv("GEONAMES_DIR", "/app/geonames"),
-		APIKey:          os.Getenv("API_KEY"),
-		ScanInterval:    getEnvDuration("SCAN_INTERVAL", 30*time.Minute),
-		ExcludePatterns: getEnvList("EXCLUDE_PATTERNS"),
-		MaxWidth:        getEnvInt("MAX_WIDTH", 2560),
-		MaxHeight:       getEnvInt("MAX_HEIGHT", 2560),
-		JPEGQuality:     getEnvInt("JPEG_QUALITY", 88),
-		CacheMaxMB:      int64(getEnvInt("CACHE_MAX_MB", 1024)),
-		PrebakeBlur:     strings.EqualFold(strings.TrimSpace(os.Getenv("PREBAKE_BLUR")), "true"),
-		FrameWidth:      getEnvInt("FRAME_WIDTH", 1440),
-		FrameHeight:     getEnvInt("FRAME_HEIGHT", 2560),
+		Port:                 getEnv("PORT", "2283"),
+		LibraryDir:           getEnv("PHOTOS_DIR", "/photos"),
+		DataDir:              getEnv("DATA_DIR", "/data"),
+		GeoNamesDir:          getEnv("GEONAMES_DIR", "/app/geonames"),
+		APIKey:               os.Getenv("API_KEY"),
+		ScanInterval:         getEnvDuration("SCAN_INTERVAL", 30*time.Minute),
+		ExcludePatterns:      getEnvList("EXCLUDE_PATTERNS"),
+		MaxWidth:             getEnvInt("MAX_WIDTH", 2560),
+		MaxHeight:            getEnvInt("MAX_HEIGHT", 2560),
+		JPEGQuality:          getEnvInt("JPEG_QUALITY", 88),
+		CacheMaxMB:           int64(getEnvInt("CACHE_MAX_MB", 1024)),
+		CacheMode:            strings.ToLower(getEnv("CACHE_MODE", "memory")),
+		PrebakeBlur:          strings.EqualFold(strings.TrimSpace(os.Getenv("PREBAKE_BLUR")), "true"),
+		FrameWidth:           getEnvInt("FRAME_WIDTH", 1440),
+		FrameHeight:          getEnvInt("FRAME_HEIGHT", 2560),
+		MaxConcurrentDecodes: getEnvInt("MAX_CONCURRENT_DECODES", 2),
 	}
 }
 

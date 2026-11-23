@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -353,7 +354,7 @@ func (s *Server) handleAssetPreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sourcePath := filepath.Join(s.libraryDir, filepath.FromSlash(asset.RelPath))
-	cachedPath, err := s.cache.GetOrGenerate(r.Context(), asset.ID, sourcePath, asset.Orientation)
+	res, err := s.cache.GetOrGenerate(r.Context(), asset.ID, sourcePath, asset.Orientation)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
@@ -362,7 +363,11 @@ func (s *Server) handleAssetPreview(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
-	http.ServeFile(w, r, cachedPath)
+	if len(res.Data) > 0 {
+		http.ServeContent(w, r, asset.ID+".jpg", time.Unix(asset.Mtime, 0), bytes.NewReader(res.Data))
+		return
+	}
+	http.ServeFile(w, r, res.Path)
 }
 
 func (s *Server) handleAdminScan(w http.ResponseWriter, r *http.Request) {
