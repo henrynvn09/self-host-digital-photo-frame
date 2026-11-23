@@ -46,6 +46,9 @@ RUN node -e ' \
     "fs.watchFile(file, { interval: 2000 }, (curr, prev) => { if (curr.mtimeMs !== prev.mtimeMs || curr.size !== prev.size) { try { const cp = getConfigFilePath(); delete require.cache[require.resolve(cp)]; require(cp); } catch (e) { Log.error(`[watchFile] Ignoring invalid config.js save: ${e.message}`); return; } restartServer(`File changed: ${path.basename(file)} — restarting...`); } });\n\t\tLog.log(`Watching file: ${file}`);" \
   ); \
   fs.writeFileSync("serveronly/watcher.js", src); \
+  let utils = fs.readFileSync("js/utils.js", "utf8"); \
+  utils = utils.replace("Log.error(`Could not write config/basepath.js file: ${error.message}`);", "if (error.code !== \"EROFS\") Log.error(`Could not write config/basepath.js file: ${error.message}`);"); \
+  fs.writeFileSync("js/utils.js", utils); \
 '
 
 # Run MagicMirror in headless server-only watch mode (clients connect on port 8080/8036)
