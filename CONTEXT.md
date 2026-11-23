@@ -26,6 +26,18 @@ _Avoid_: Thumbnail, resized image, variant
 A human-readable event or trip label derived from an asset's immediate parent directory name, omitted when that directory name is purely numeric.
 _Avoid_: Folder, collection, category, tag
 
+**Sampling Deck**:
+A scoped subset of assets matching an anniversary query window from which unseen assets are drawn randomly without replacement.
+_Avoid_: Bucket, playlist, photo queue, batch
+
+**Exhaustion Cycle**:
+The operational cycle during which unseen assets in a sampling deck are progressively dealt until 0 unseen assets remain, triggering an automatic reshuffle.
+_Avoid_: Reset round, replenishment, reload, wipe
+
+**Dealt Asset**:
+An asset that has been selected and returned by an anniversary query during the current exhaustion cycle, marked to prevent duplicate appearances until cycle reset.
+_Avoid_: Seen photo, viewed asset, played item
+
 ### Display & Client
 
 **Frame Client**:
