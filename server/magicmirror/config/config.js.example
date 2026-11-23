@@ -75,6 +75,7 @@ let config = {
 				],
 				dateFormat: "DD/MM",
 				fullDayEventDateFormat: "DD/MM",
+				displaySymbol: false,
 				showEnd: true,
 				timeFormat: "absolute",
 				urgency: 0,
