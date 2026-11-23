@@ -4,7 +4,7 @@ Thin Dockerized **MagicMirror²** server extending pinned `karsten13/magicmirror
 
 - `MMM-ImmichSlideShow` — connects privately to `http://photo-api:2283` over the Compose bridge network
 - `MMM-Worldclock` — secondary timezone display (e.g. Vietnam time)
-- `calendar` (built-in) — top-center upcoming events ("CUỘC HẸN SẮP TỚI") synced every 1 minute from a Google Calendar private/public iCal `.ics` URL
+- `calendar` (built-in) — top-center upcoming events ("CUỘC HẸN SẮP TỚI") synced every 1 hour from a Google Calendar share link (`?cid=...`) or iCal `.ics` URL
 - `MMM-GoogleSheetsToDo` (bundled in `magicmirror/modules/MMM-GoogleSheetsToDo`) — top-right to-do list ("Việc cần làm") synced every 1 minute directly from a Google Sheet CSV export (zero OAuth tokens required)
 - `MMM-OpenWeatherMapForecast` — local weather forecast
 
@@ -19,7 +19,7 @@ From the `server/` directory:
 2. **Edit `magicmirror/config/config.js`**:
    - Replace `CHANGE_ME_TO_MATCH_API_KEY_IN_ENV` with the same `API_KEY` you set in `server/.env`.
    - Replace `YOUR_OPENWEATHERMAP_API_KEY` and coordinates with your own values.
-   - For **`calendar` ("CUỘC HẸN SẮP TỚI")**: in Google Calendar → *Settings and sharing* → *Integrate calendar*, copy the **Secret address in iCal format** (`.ics`) and paste it into `calendars[0].url` (`fetchInterval: 60 * 1000` refreshes every 1 minute).
+   - For **`calendar` ("CUỘC HẸN SẮP TỚI")**: paste either your Google Calendar share link (`https://calendar.google.com/calendar/u/0?cid=...` for a public calendar) or the **Secret address in iCal format** (`.ics`) into `resolveGoogleCalendarUrl(...)` under `calendars[0].url` (`fetchInterval: 60 * 60 * 1000` refreshes every 1 hour).
    - For **`MMM-GoogleSheetsToDo` ("Việc cần làm")**: import [`magicmirror/config/todo-template.csv`](config/todo-template.csv) into Google Sheets (*File → Import → Upload*), select Column A (`Done`) and click *Insert → Checkbox*, share the sheet as **Anyone with the link → Viewer**, and paste the Google Sheet URL into `spreadsheetUrl`. Supports 1-column task lists (`Mua sữa`, `Mua trứng`, `Nộp tiền bh`) or 2-column checkbox + task sheets (`[Checkbox, Task]` or `[Task, Checkbox]`), refreshing every `refreshSeconds: 60`.
    - Keep `url: "http://photo-api:2283"` — it talks directly to `photo-api` over the internal Docker network.
 3. **Customize styling (optional)**: edit `magicmirror/css/custom.css`.
