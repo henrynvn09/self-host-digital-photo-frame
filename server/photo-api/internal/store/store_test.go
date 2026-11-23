@@ -40,6 +40,27 @@ func TestSearchRandomAtYear_IntraRoundDisjointAndReshuffle(t *testing.T) {
 		}
 	}
 
+	// Assets outside the range (May 2018) to verify date-window isolation
+	mayTime := time.Date(2018, 5, 1, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 50; i++ {
+		taken := mayTime.Add(time.Duration(i) * time.Hour)
+		err := st.UpsertAsset(ctx, store.Asset{
+			ID:          fmt.Sprintf("asset-2018-may-%03d", i),
+			RelPath:     fmt.Sprintf("2018/May/photo_%03d.jpg", i),
+			Mtime:       taken.Unix(),
+			Size:        1000,
+			TakenAt:     taken,
+			TakenYear:   taken.Year(),
+			TakenMonth:  int(taken.Month()),
+			TakenDay:    taken.Day(),
+			Orientation: 1,
+			IndexedAt:   time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("upsert may: %v", err)
+		}
+	}
+
 	startDate := time.Date(2018, 10, 1, 0, 0, 0, 0, time.UTC)
 	endDate := time.Date(2018, 11, 30, 23, 59, 59, 0, time.UTC)
 
@@ -50,12 +71,12 @@ func TestSearchRandomAtYear_IntraRoundDisjointAndReshuffle(t *testing.T) {
 	}
 
 	// 1. Idempotency on same day
-	day1_retry, err := st.SearchRandomAtYear(ctx, &startDate, &endDate, 100, 1, 2026)
+	day1Retry, err := st.SearchRandomAtYear(ctx, &startDate, &endDate, 100, 1, 2026)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := range day1 {
-		if day1[i].ID != day1_retry[i].ID {
+		if day1[i].ID != day1Retry[i].ID {
 			t.Fatalf("idempotency check failed at index %d", i)
 		}
 	}
@@ -70,18 +91,27 @@ func TestSearchRandomAtYear_IntraRoundDisjointAndReshuffle(t *testing.T) {
 		t.Fatalf("day 3 failed: len=%d, err=%v", len(day3), err)
 	}
 
-	// Verify Days 1, 2, 3 are mutually disjoint
+	// Verify Days 1, 2, 3 are mutually disjoint and none are from May 2018
 	seen := make(map[string]int)
 	for _, a := range day1 {
+		if a.TakenMonth == 5 {
+			t.Fatalf("out-of-window May asset leaked into day 1: %s", a.ID)
+		}
 		seen[a.ID] = 1
 	}
 	for _, a := range day2 {
+		if a.TakenMonth == 5 {
+			t.Fatalf("out-of-window May asset leaked into day 2: %s", a.ID)
+		}
 		if seen[a.ID] != 0 {
 			t.Fatalf("asset %s in day 2 was already seen in day %d", a.ID, seen[a.ID])
 		}
 		seen[a.ID] = 2
 	}
 	for _, a := range day3 {
+		if a.TakenMonth == 5 {
+			t.Fatalf("out-of-window May asset leaked into day 3: %s", a.ID)
+		}
 		if seen[a.ID] != 0 {
 			t.Fatalf("asset %s in day 3 was already seen in day %d", a.ID, seen[a.ID])
 		}
@@ -112,7 +142,10 @@ func TestSearchRandomAtYear_IntraRoundDisjointAndReshuffle(t *testing.T) {
 	// 3. Zero DB writes
 	for _, a := range day1 {
 		dbAsset, err := st.GetAsset(ctx, a.ID)
-		if err != nil || dbAsset.DealtAt != nil {
+		if err != nil {
+			t.Fatalf("get asset error: %v", err)
+		}
+		if dbAsset.DealtAt != nil {
 			t.Fatalf("expected dealt_at to remain nil, got %v", dbAsset.DealtAt)
 		}
 	}
@@ -132,7 +165,7 @@ func TestSearchRandomAtYear_SeamlessStraddleStitch(t *testing.T) {
 	base2020 := time.Date(2020, 8, 1, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < 150; i++ {
 		taken := base2020.Add(time.Duration(i) * time.Hour)
-		_ = st.UpsertAsset(ctx, store.Asset{
+		err := st.UpsertAsset(ctx, store.Asset{
 			ID:          fmt.Sprintf("asset-wrap-%03d", i),
 			RelPath:     fmt.Sprintf("2020/Aug/photo_%03d.jpg", i),
 			Mtime:       taken.Unix(),
@@ -144,6 +177,9 @@ func TestSearchRandomAtYear_SeamlessStraddleStitch(t *testing.T) {
 			Orientation: 1,
 			IndexedAt:   time.Now(),
 		})
+		if err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
 	}
 
 	startWrap := time.Date(2020, 8, 1, 0, 0, 0, 0, time.UTC)
@@ -201,6 +237,62 @@ func TestSearchRandomAtYear_SeamlessStraddleStitch(t *testing.T) {
 	}
 }
 
+// TestSearchRandomAtYear_MultiRoundStraddleChain verifies intra-day uniqueness across multi-round straddles (round >= 2)
+// where K < N < 2K (e.g. N=105, K=100) across 10 consecutive days.
+func TestSearchRandomAtYear_MultiRoundStraddleChain(t *testing.T) {
+	dataDir := t.TempDir()
+	st, err := store.Open(dataDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+
+	// 105 assets, K = 100: straddles occur on Day 2, Day 3, Day 4, Day 5...
+	baseTime := time.Date(2022, 1, 1, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 105; i++ {
+		taken := baseTime.Add(time.Duration(i) * time.Hour)
+		err := st.UpsertAsset(ctx, store.Asset{
+			ID:          fmt.Sprintf("chain-%03d", i),
+			RelPath:     fmt.Sprintf("2022/Jan/photo_%03d.jpg", i),
+			Mtime:       taken.Unix(),
+			Size:        1000,
+			TakenAt:     taken,
+			TakenYear:   2022,
+			TakenMonth:  1,
+			TakenDay:    1,
+			Orientation: 1,
+			IndexedAt:   time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+
+	start := time.Date(2022, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2022, 1, 31, 23, 59, 59, 0, time.UTC)
+
+	for day := 1; day <= 10; day++ {
+		res, err := st.SearchRandomAtYear(ctx, &start, &end, 100, day, 2026)
+		if err != nil {
+			t.Fatalf("day %d failed: %v", day, err)
+		}
+		if len(res) != 100 {
+			t.Fatalf("day %d: expected 100 items, got %d", day, len(res))
+		}
+
+		// Verify 100% intra-day uniqueness (zero duplicates within any day's batch)
+		seen := make(map[string]bool, 100)
+		for _, a := range res {
+			if seen[a.ID] {
+				t.Fatalf("day %d (straddle round >= 1) contained duplicate asset %s", day, a.ID)
+			}
+			seen[a.ID] = true
+		}
+	}
+}
+
 func TestSearchRandomAtYear_UnderFillDailyVariation(t *testing.T) {
 	dataDir := t.TempDir()
 	st, err := store.Open(dataDir)
@@ -215,7 +307,7 @@ func TestSearchRandomAtYear_UnderFillDailyVariation(t *testing.T) {
 	baseTime := time.Date(2019, 6, 1, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < 35; i++ {
 		taken := baseTime.Add(time.Duration(i) * time.Hour)
-		_ = st.UpsertAsset(ctx, store.Asset{
+		err := st.UpsertAsset(ctx, store.Asset{
 			ID:          fmt.Sprintf("asset-underfill-%02d", i),
 			RelPath:     fmt.Sprintf("2019/June/photo_%02d.jpg", i),
 			Mtime:       taken.Unix(),
@@ -227,6 +319,9 @@ func TestSearchRandomAtYear_UnderFillDailyVariation(t *testing.T) {
 			Orientation: 1,
 			IndexedAt:   time.Now(),
 		})
+		if err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
 	}
 
 	startUnderfill := time.Date(2019, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -254,6 +349,12 @@ func TestSearchRandomAtYear_UnderFillDailyVariation(t *testing.T) {
 	if identicalIndices == 35 {
 		t.Fatalf("underfill order was static across days! Expected dynamic permutation.")
 	}
+
+	// Test leap day (dayOfYear = 366)
+	resLeap, err := st.SearchRandomAt(ctx, &startUnderfill, &endUnderfill, 100, 366)
+	if err != nil || len(resLeap) != 35 {
+		t.Fatalf("leap day failed: len=%d, err=%v", len(resLeap), err)
+	}
 }
 
 func TestSearchRandomAtYear_MultiYearSeedVariation(t *testing.T) {
@@ -269,7 +370,7 @@ func TestSearchRandomAtYear_MultiYearSeedVariation(t *testing.T) {
 	baseTime := time.Date(2015, 5, 1, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < 50; i++ {
 		taken := baseTime.Add(time.Duration(i) * time.Hour)
-		_ = st.UpsertAsset(ctx, store.Asset{
+		err := st.UpsertAsset(ctx, store.Asset{
 			ID:          fmt.Sprintf("asset-my-%02d", i),
 			RelPath:     fmt.Sprintf("2015/May/photo_%02d.jpg", i),
 			Mtime:       taken.Unix(),
@@ -281,6 +382,9 @@ func TestSearchRandomAtYear_MultiYearSeedVariation(t *testing.T) {
 			Orientation: 1,
 			IndexedAt:   time.Now(),
 		})
+		if err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
 	}
 
 	start := time.Date(2015, 5, 1, 0, 0, 0, 0, time.UTC)
@@ -320,7 +424,7 @@ func TestSearchRandomStatelessWithoutDateRange(t *testing.T) {
 
 	now := time.Now()
 	for i := 0; i < 10; i++ {
-		_ = st.UpsertAsset(ctx, store.Asset{
+		err := st.UpsertAsset(ctx, store.Asset{
 			ID:          fmt.Sprintf("stateless-%d", i),
 			RelPath:     fmt.Sprintf("photo_%d.jpg", i),
 			Mtime:       now.Unix(),
@@ -332,6 +436,9 @@ func TestSearchRandomStatelessWithoutDateRange(t *testing.T) {
 			Orientation: 1,
 			IndexedAt:   now,
 		})
+		if err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
 	}
 
 	res, err := st.SearchRandom(ctx, nil, nil, 5)
@@ -342,7 +449,7 @@ func TestSearchRandomStatelessWithoutDateRange(t *testing.T) {
 	for _, a := range res {
 		dbAsset, err := st.GetAsset(ctx, a.ID)
 		if err != nil {
-			t.Fatalf("get asset: %v", err)
+			t.Fatalf("get asset error: %v", err)
 		}
 		if dbAsset.DealtAt != nil {
 			t.Fatalf("expected dealt_at to remain nil for stateless random search")

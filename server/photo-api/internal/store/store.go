@@ -263,6 +263,12 @@ func (s *Store) SearchMetadata(ctx context.Context, p SearchParams) (SearchResul
 	return SearchResult{Items: items, Total: total}, nil
 }
 
+const (
+	defaultRandomSize = 100
+	maxRandomSize     = 1000
+)
+
+// SearchRandom returns a deterministic pseudo-random slice of assets for the current day.
 func (s *Store) SearchRandom(ctx context.Context, takenAfter, takenBefore *time.Time, size int) ([]Asset, error) {
 	now := time.Now().UTC()
 	return s.SearchRandomAtYear(ctx, takenAfter, takenBefore, size, now.YearDay(), now.Year())
@@ -276,12 +282,12 @@ func (s *Store) SearchRandomAt(ctx context.Context, takenAfter, takenBefore *tim
 
 // SearchRandomAtYear performs deterministic multi-round pseudorandom sampling without replacement with seamless straddle stitch.
 // It requires zero database writes, eliminates lock contention, and provides idempotent daily pools.
-func (s *Store) SearchRandomAtYear(ctx context.Context, takenAfter, takenBefore *time.Time, size int, dayOfYear int, year int) ([]Asset, error) {
+func (s *Store) SearchRandomAtYear(ctx context.Context, takenAfter, takenBefore *time.Time, size int, dayOfYear int, currentYear int) ([]Asset, error) {
 	if size <= 0 {
-		size = 100
+		size = defaultRandomSize
 	}
-	if size > 1000 {
-		size = 1000
+	if size > maxRandomSize {
+		size = maxRandomSize
 	}
 
 	// If no date bounds are specified, maintain pure stateless random sampling across the entire library
@@ -297,22 +303,8 @@ func (s *Store) SearchRandomAtYear(ctx context.Context, takenAfter, takenBefore 
 
 	where, args := buildDateWhere(takenAfter, takenBefore)
 
-	// Fetch all matching IDs in index order
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM assets`+where+` ORDER BY id ASC`, args...)
+	allIDs, err := s.listMatchingIDs(ctx, where, args)
 	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var allIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		allIDs = append(allIDs, id)
-	}
-	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	total := len(allIDs)
@@ -327,7 +319,7 @@ func (s *Store) SearchRandomAtYear(ctx context.Context, takenAfter, takenBefore 
 	// Under-fill: If total matching assets in this window <= requested size,
 	// return all assets permuted with a daily seed so order is never frozen/static
 	if total <= size {
-		deck := permuteIDs(allIDs, year, takenAfter, takenBefore, dayOfYear-1)
+		deck := permuteIDs(allIDs, currentYear, takenAfter, takenBefore, dayOfYear-1)
 		return s.getAssetsByIDs(ctx, deck)
 	}
 
@@ -336,7 +328,7 @@ func (s *Store) SearchRandomAtYear(ctx context.Context, takenAfter, takenBefore 
 	round1 := globalStart / total
 	offset1 := globalStart % total
 
-	deck1 := s.getRoundDeck(allIDs, year, takenAfter, takenBefore, size, round1)
+	deck1 := getRoundDeck(allIDs, currentYear, takenAfter, takenBefore, size, round1)
 
 	var targetIDs []string
 	if offset1+size <= total {
@@ -349,7 +341,7 @@ func (s *Store) SearchRandomAtYear(ctx context.Context, takenAfter, takenBefore 
 
 		// Part 2: advance to round2 = round1 + 1 (freshly shuffled with round2 seed)
 		round2 := round1 + 1
-		deck2 := s.getRoundDeck(allIDs, year, takenAfter, takenBefore, size, round2)
+		deck2 := getRoundDeck(allIDs, currentYear, takenAfter, takenBefore, size, round2)
 		needed := size - len(part1)
 		part2 := deck2[:needed]
 
@@ -361,42 +353,79 @@ func (s *Store) SearchRandomAtYear(ctx context.Context, takenAfter, takenBefore 
 	return s.getAssetsByIDs(ctx, targetIDs)
 }
 
-func (s *Store) getRoundDeck(allIDs []string, year int, takenAfter, takenBefore *time.Time, size int, round int) []string {
-	total := len(allIDs)
-	if total <= size || round == 0 {
-		return permuteIDs(allIDs, year, takenAfter, takenBefore, round)
+func (s *Store) listMatchingIDs(ctx context.Context, where string, args []any) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM assets`+where+` ORDER BY id ASC`, args...)
+	if err != nil {
+		return nil, err
 	}
+	defer rows.Close()
 
-	deck := permuteIDs(allIDs, year, takenAfter, takenBefore, round)
-	rem := (round * total) % size
-	if rem == 0 {
-		return deck
-	}
-
-	prevDeck := permuteIDs(allIDs, year, takenAfter, takenBefore, round-1)
-	tailCount := rem
-	tailItems := make(map[string]bool, tailCount)
-	for _, id := range prevDeck[total-tailCount:] {
-		tailItems[id] = true
-	}
-
-	headNeeded := size - tailCount
-	j := headNeeded
-	for i := 0; i < headNeeded; i++ {
-		if tailItems[deck[i]] {
-			for j < total && tailItems[deck[j]] {
-				j++
-			}
-			if j < total {
-				deck[i], deck[j] = deck[j], deck[i]
-				j++
-			}
+	var allIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
 		}
+		allIDs = append(allIDs, id)
 	}
-	return deck
+	return allIDs, rows.Err()
 }
 
-func permuteIDs(ids []string, year int, takenAfter, takenBefore *time.Time, round int) []string {
+func getRoundDeck(allIDs []string, currentYear int, takenAfter, takenBefore *time.Time, size int, targetRound int) []string {
+	total := len(allIDs)
+	if total <= size || targetRound == 0 {
+		return permuteIDs(allIDs, currentYear, takenAfter, takenBefore, targetRound)
+	}
+
+	stepGcd := gcd(total, size)
+	period := size / stepGcd
+	startRound := targetRound - (targetRound % period)
+
+	currentDeck := permuteIDs(allIDs, currentYear, takenAfter, takenBefore, startRound)
+	if startRound == targetRound {
+		return currentDeck
+	}
+
+	for r := startRound + 1; r <= targetRound; r++ {
+		tailCount := (r * total) % size
+		nextDeck := permuteIDs(allIDs, currentYear, takenAfter, takenBefore, r)
+		if tailCount == 0 {
+			currentDeck = nextDeck
+			continue
+		}
+
+		tailItems := make(map[string]bool, tailCount)
+		for _, id := range currentDeck[total-tailCount:] {
+			tailItems[id] = true
+		}
+
+		headNeeded := size - tailCount
+		j := headNeeded
+		for i := 0; i < headNeeded; i++ {
+			if tailItems[nextDeck[i]] {
+				for j < total && tailItems[nextDeck[j]] {
+					j++
+				}
+				if j < total {
+					nextDeck[i], nextDeck[j] = nextDeck[j], nextDeck[i]
+					j++
+				}
+			}
+		}
+		currentDeck = nextDeck
+	}
+
+	return currentDeck
+}
+
+func gcd(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
+}
+
+func permuteIDs(ids []string, currentYear int, takenAfter, takenBefore *time.Time, round int) []string {
 	deck := make([]string, len(ids))
 	copy(deck, ids)
 
@@ -409,7 +438,7 @@ func permuteIDs(ids []string, year int, takenAfter, takenBefore *time.Time, roun
 	}
 
 	h := fnv.New64a()
-	_, _ = fmt.Fprintf(h, "%d:%s:%s:%d", year, afterStr, beforeStr, round)
+	_, _ = fmt.Fprintf(h, "%d|%s|%s|%d", currentYear, afterStr, beforeStr, round)
 	seed := int64(h.Sum64())
 
 	r := rand.New(rand.NewSource(seed))
