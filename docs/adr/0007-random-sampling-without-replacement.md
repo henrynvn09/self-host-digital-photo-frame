@@ -1,10 +1,10 @@
-# 0007. Random Sampling Without Replacement (Anniversary Exhaustion Cycle)
+# 0007. Stateless Deterministic Permutation for Anniversary Random Sampling
 
 Date: 2026-11-23
 
 ## Status
 
-Accepted
+Accepted (Supersedes stateful DB tracking)
 
 ## Context
 
@@ -12,35 +12,39 @@ The digital photo frame's primary mode is `anniversary` mode, which queries `pho
 
 Previously, queries executed naive stateless random sampling (`ORDER BY RANDOM() LIMIT 100`). In large photo libraries (e.g. 10k+ photos) or smaller yearly subsets (e.g. 150 photos), pure random sampling with replacement often picked recently displayed photos multiple days in a row while leaving hundreds of other anniversary photos unviewed.
 
+An initial proposal evaluated stateful tracking via a database column (`dealt_at`) and write-heavy `UPDATE` cycles. However, adding database writes and lock contention to high-frequency slideshow queries introduces unnecessary write churn, database locking, and multi-client state coupling.
+
 ## Decision
 
-1. **Random Sampling Without Replacement via Exhaustion Cycles**:
-   - For each anniversary query window (e.g. year $Y$ between `takenAfter` and `takenBefore`), maintain a stateful **Sampling Deck**.
-   - Assets that have already been dealt in the current cycle are excluded from selection:
-     ```sql
-     SELECT ... FROM assets 
-     WHERE taken_at >= ? AND taken_at <= ? AND dealt_at IS NULL 
-     ORDER BY RANDOM() LIMIT ?
-     ```
-   - Returned assets are immediately marked with `dealt_at = CURRENT_TIMESTAMP` (Deal-Time tracking).
+1. **Deterministic Pseudorandom Permutation via Natural UUIDv5 Shuffling**:
+   - Asset IDs are deterministic UUIDv5 hashes derived from relative file paths.
+   - Because cryptographic hash functions yield uniformly distributed bit patterns, ordering rows by `id ASC` naturally produces a cryptographically uniform pseudorandom permutation of the entire photo library.
 
-2. **Under-Fill Handling**:
-   - If a deck has fewer remaining unseen assets than requested (e.g. only 35 unseen assets remain, but 100 were requested), the query returns only those 35 assets without prematurely repeating already dealt assets.
+2. **Stateless Cyclic Day-of-Year Offset**:
+   - For an anniversary window with $N$ matching assets and requested page size $K$, the daily starting offset is computed directly from the calendar day of the year ($D \in [1..366]$):
+     $$\text{DailyOffset} = ((D - 1) \times K) \pmod N$$
+   - Consecutive days ($D, D+1$) advance by exactly $K$ positions, guaranteeing disjoint non-overlapping slices until all $N$ assets have been exhausted.
 
-3. **Auto-Reset on Empty**:
-   - When an anniversary window's unseen count reaches 0, all assets within that window have their `dealt_at` reset to `NULL`, automatically beginning a fresh Exhaustion Cycle for the next query.
+3. **Under-Fill and Wraparound Guarantees**:
+   - **Under-fill**: If $N \le K$, the query returns all $N$ matching assets ordered by `id ASC` without artificial duplication.
+   - **Wraparound**: When $\text{offset} + K > N$, the query seamlessly splices the remainder of the array ($\text{items}[\text{offset}..N-1]$) with the start of the array ($\text{items}[0..K - (N - \text{offset}) - 1]$), ensuring full $K$ items are returned without duplicates within any single day.
 
-4. **Seasonal Expiration**:
-   - When assets age out of the current seasonal window, their `dealt_at` timestamp is pruned or ignored, guaranteeing that when that season returns the following year, the entire deck starts fresh.
+4. **Zero Database Writes & Pure Read Operations**:
+   - Slideshow and anniversary queries execute purely as `SELECT COUNT(*)` followed by `SELECT ... ORDER BY id ASC LIMIT ? OFFSET ?`.
+   - SQLite write transactions, WAL file growth, and database lock contention are completely eliminated during slideshow playback.
+   - Multi-device displays (multiple digital photo frames across rooms) naturally display consistent, synchronized photo pools for each day.
 
-5. **Storage**:
-   - State is persisted directly in SQLite `index.db` in `photo-api` (`dealt_at INTEGER` column or dedicated `deck_state` table), surviving client, browser, and container restarts.
+5. **Pure Stateless Random Fallback**:
+   - For global queries without date bounds (`takenAfter == nil && takenBefore == nil`), `photo-api` continues to use `ORDER BY RANDOM() LIMIT ?`.
 
 ## Consequences
 
 - **Pros**:
-  - Eliminates duplicate photos across consecutive days until every photo in that year's anniversary window has been shown.
-  - Gives 100% exposure to all memories in the library over time.
-  - Zero client changes needed in `MMM-ImmichSlideShow` (completely backward-compatible with standard `POST /api/search/random`).
+  - **Zero DB Writes**: Pure read-only queries with no disk writes, lock contention, or transaction rollbacks.
+  - **Sampling Without Replacement**: Consecutively viewed days yield 100% disjoint assets until the yearly window is fully exhausted.
+  - **Idempotency**: Multiple calls or multiple clients on the same day receive the exact same deterministic daily pool.
+  - **Zero Client Changes**: Fully backwards-compatible with `MMM-ImmichSlideShow` and existing API contracts (`POST /api/search/random`).
+  - **Instant Recovery**: Survives container restarts, crashes, or cache clears with zero state drift or recovery required.
 - **Cons**:
-  - Adds state modification to what was previously a read-only search endpoint. Handled safely within SQLite transactions.
+  - The sequence of photos for a given day is fixed by calendar day and library contents; adding or removing photos from an anniversary window shifts the cyclic modulo offset gracefully.
+

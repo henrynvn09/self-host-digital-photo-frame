@@ -262,6 +262,13 @@ func (s *Store) SearchMetadata(ctx context.Context, p SearchParams) (SearchResul
 }
 
 func (s *Store) SearchRandom(ctx context.Context, takenAfter, takenBefore *time.Time, size int) ([]Asset, error) {
+	now := time.Now().UTC()
+	return s.SearchRandomAt(ctx, takenAfter, takenBefore, size, now.YearDay())
+}
+
+// SearchRandomAt performs deterministic pseudorandom sampling without replacement based on dayOfYear.
+// It requires zero database writes, eliminates lock contention, and provides idempotent daily pools.
+func (s *Store) SearchRandomAt(ctx context.Context, takenAfter, takenBefore *time.Time, size int, dayOfYear int) ([]Asset, error) {
 	if size <= 0 {
 		size = 100
 	}
@@ -269,9 +276,7 @@ func (s *Store) SearchRandom(ctx context.Context, takenAfter, takenBefore *time.
 		size = 1000
 	}
 
-	where, args := buildDateWhere(takenAfter, takenBefore)
-
-	// If no date bounds are specified, maintain pure stateless random sampling
+	// If no date bounds are specified, maintain pure stateless random sampling across the entire library
 	if takenAfter == nil && takenBefore == nil {
 		q := fmt.Sprintf(`SELECT %s FROM assets ORDER BY RANDOM() LIMIT ?`, assetColumns)
 		rows, err := s.db.QueryContext(ctx, q, size)
@@ -282,78 +287,76 @@ func (s *Store) SearchRandom(ctx context.Context, takenAfter, takenBefore *time.
 		return scanAssets(rows)
 	}
 
-	// For anniversary / date-bounded queries: Random Sampling Without Replacement (Exhaustion Cycles)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
+	where, args := buildDateWhere(takenAfter, takenBefore)
+
+	// For anniversary / date-bounded queries: Stateless Deterministic Permutation
+	// 1. Count matching rows in the anniversary window
+	var total int
+	countQ := `SELECT COUNT(*) FROM assets` + where
+	if err := s.db.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
 		return nil, err
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	unseenWhere := where + " AND dealt_at IS NULL"
-	q := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY RANDOM() LIMIT ?`, assetColumns, unseenWhere)
-	qArgs := append(append([]any{}, args...), size)
-
-	rows, err := tx.QueryContext(ctx, q, qArgs...)
-	if err != nil {
-		return nil, err
-	}
-	items, err := scanAssets(rows)
-	rows.Close()
-	if err != nil {
-		return nil, err
+	if total == 0 {
+		return []Asset{}, nil
 	}
 
-	// If zero unseen assets remain, check if deck is exhausted and auto-reset
-	if len(items) == 0 {
-		var totalInWindow int
-		countQ := `SELECT COUNT(*) FROM assets` + where
-		if err := tx.QueryRowContext(ctx, countQ, args...).Scan(&totalInWindow); err != nil {
-			return nil, err
-		}
-
-		if totalInWindow > 0 {
-			// Auto-reset on empty: clear dealt_at for all assets in this anniversary deck
-			resetQ := `UPDATE assets SET dealt_at = NULL` + where
-			if _, err := tx.ExecContext(ctx, resetQ, args...); err != nil {
-				return nil, err
-			}
-
-			// Re-query from freshly reset sampling deck
-			rows, err := tx.QueryContext(ctx, q, qArgs...)
-			if err != nil {
-				return nil, err
-			}
-			items, err = scanAssets(rows)
-			rows.Close()
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
-
-	// Mark dealt assets in current transaction (Deal-Time tracking)
-	if len(items) > 0 {
-		nowUnix := time.Now().Unix()
-		nowTime := time.Unix(nowUnix, 0).UTC()
-		updateStmt, err := tx.PrepareContext(ctx, `UPDATE assets SET dealt_at = ? WHERE id = ?`)
+	// Under-fill: If fewer assets exist in this window than requested, return all of them
+	if total <= size {
+		q := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY id ASC`, assetColumns, where)
+		rows, err := s.db.QueryContext(ctx, q, args...)
 		if err != nil {
 			return nil, err
 		}
-		defer updateStmt.Close()
-
-		for i := range items {
-			if _, err := updateStmt.ExecContext(ctx, nowUnix, items[i].ID); err != nil {
-				return nil, err
-			}
-			items[i].DealtAt = &nowTime
-		}
+		defer rows.Close()
+		return scanAssets(rows)
 	}
 
-	if err := tx.Commit(); err != nil {
+	// Compute day-based cyclic offset: visits every asset without replacement before looping
+	if dayOfYear <= 0 {
+		dayOfYear = 1
+	}
+	offset := ((dayOfYear - 1) * size) % total
+
+	// Query deterministic slice
+	if offset+size <= total {
+		q := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY id ASC LIMIT ? OFFSET ?`, assetColumns, where)
+		qArgs := append(append([]any{}, args...), size, offset)
+		rows, err := s.db.QueryContext(ctx, q, qArgs...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		return scanAssets(rows)
+	}
+
+	// Wraparound slice: take remaining items to end of array + items from beginning
+	firstCount := total - offset
+	q1 := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY id ASC LIMIT ? OFFSET ?`, assetColumns, where)
+	q1Args := append(append([]any{}, args...), firstCount, offset)
+	rows1, err := s.db.QueryContext(ctx, q1, q1Args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows1.Close()
+	items1, err := scanAssets(rows1)
+	if err != nil {
 		return nil, err
 	}
 
-	return items, nil
+	secondCount := size - firstCount
+	q2 := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY id ASC LIMIT ? OFFSET 0`, assetColumns, where)
+	q2Args := append(append([]any{}, args...), secondCount)
+	rows2, err := s.db.QueryContext(ctx, q2, q2Args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows2.Close()
+	items2, err := scanAssets(rows2)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(items1, items2...), nil
 }
 
 // ResetDealt clears dealt timestamps for assets within the specified date window (or all assets if nil).

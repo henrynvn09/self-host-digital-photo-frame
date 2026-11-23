@@ -638,7 +638,7 @@ func writeDMS(buf *bytes.Buffer, deg float64) {
 	_ = binary.Write(buf, be, uint32(10000))
 }
 
-func TestAPISearchRandomExhaustionCycles(t *testing.T) {
+func TestAPISearchRandomDeterministic(t *testing.T) {
 	env := setupTestEnv(t, 50, "memory")
 
 	// Create 5 images in year 2024
@@ -658,7 +658,7 @@ func TestAPISearchRandomExhaustionCycles(t *testing.T) {
 		"takenBefore": "2024-12-31T23:59:59Z",
 	}
 
-	// Call 1: size=2 -> returns 2 unique photos
+	// Call 1: size=2 -> returns 2 unique photos for today's deterministic slice
 	rec1 := env.doJSON(t, "POST", "/api/search/random", searchBody, true)
 	if rec1.Code != http.StatusOK {
 		t.Fatalf("call 1 failed: %d", rec1.Code)
@@ -670,7 +670,7 @@ func TestAPISearchRandomExhaustionCycles(t *testing.T) {
 		t.Fatalf("expected 2 items in call 1, got %d (err: %v)", len(items1), err)
 	}
 
-	// Call 2: size=2 -> returns 2 disjoint unique photos
+	// Call 2: same day call -> must be idempotent and return identical 2 photos in same order
 	rec2 := env.doJSON(t, "POST", "/api/search/random", searchBody, true)
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("call 2 failed: %d", rec2.Code)
@@ -682,35 +682,9 @@ func TestAPISearchRandomExhaustionCycles(t *testing.T) {
 		t.Fatalf("expected 2 items in call 2, got %d (err: %v)", len(items2), err)
 	}
 
-	for _, it1 := range items1 {
-		for _, it2 := range items2 {
-			if it1.ID == it2.ID {
-				t.Fatalf("asset %s was returned in both call 1 and call 2 (sampling was not without replacement)", it1.ID)
-			}
+	for i := range items1 {
+		if items1[i].ID != items2[i].ID {
+			t.Fatalf("expected identical idempotent output on same day at index %d: %s vs %s", i, items1[i].ID, items2[i].ID)
 		}
-	}
-
-	// Call 3: size=2 -> only 1 unseen photo remains (5 total - 2 - 2). Under-fill: returns 1 item!
-	rec3 := env.doJSON(t, "POST", "/api/search/random", searchBody, true)
-	if rec3.Code != http.StatusOK {
-		t.Fatalf("call 3 failed: %d", rec3.Code)
-	}
-	var items3 []struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(rec3.Body.Bytes(), &items3); err != nil || len(items3) != 1 {
-		t.Fatalf("expected under-fill with 1 item in call 3, got %d", len(items3))
-	}
-
-	// Call 4: Unseen pool reached 0. Auto-reset should trigger and return 2 items!
-	rec4 := env.doJSON(t, "POST", "/api/search/random", searchBody, true)
-	if rec4.Code != http.StatusOK {
-		t.Fatalf("call 4 failed: %d", rec4.Code)
-	}
-	var items4 []struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(rec4.Body.Bytes(), &items4); err != nil || len(items4) != 2 {
-		t.Fatalf("expected 2 items in call 4 after auto-reset, got %d", len(items4))
 	}
 }
