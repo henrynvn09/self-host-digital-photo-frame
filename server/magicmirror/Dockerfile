@@ -34,7 +34,28 @@ RUN git init MMM-OpenWeatherMapForecast \
     && git checkout --detach FETCH_HEAD \
     && npm install --omit=dev
 
+COPY --chown=node:node modules/MMM-GoogleSheetsToDo /opt/magic_mirror/modules/MMM-GoogleSheetsToDo
+
 WORKDIR /opt/magic_mirror
 
-# Run MagicMirror in headless server-only mode (clients connect on port 8080/8036)
-CMD ["npm", "run", "server"]
+RUN node -e ' \
+  const fs = require("node:fs"); \
+  let src = fs.readFileSync("serveronly/watcher.js", "utf8"); \
+  src = src.replace( \
+    "Log.log(`Watching file: ${file}`);", \
+    "fs.watchFile(file, { interval: 2000 }, (curr, prev) => { if (curr.mtimeMs !== prev.mtimeMs || curr.size !== prev.size) { try { const cp = getConfigFilePath(); delete require.cache[require.resolve(cp)]; require(cp); } catch (e) { Log.error(`[watchFile] Ignoring invalid config.js save: ${e.message}`); return; } restartServer(`File changed: ${path.basename(file)} — restarting...`); } });\n\t\tLog.log(`Watching file: ${file}`);" \
+  ); \
+  fs.writeFileSync("serveronly/watcher.js", src); \
+  let utils = fs.readFileSync("js/utils.js", "utf8"); \
+  utils = utils.replace("Log.error(`Could not write config/basepath.js file: ${error.message}`);", "if (error.code !== \"EROFS\") Log.error(`Could not write config/basepath.js file: ${error.message}`);"); \
+  fs.writeFileSync("js/utils.js", utils); \
+  let cal = fs.readFileSync("defaultmodules/calendar/calendar.js", "utf8"); \
+  cal = cal.replace( \
+    "buildAbsoluteTimeText (event, eventStartDateMoment, eventEndDateMoment, now) {", \
+    "buildAbsoluteTimeText (event, eventStartDateMoment, eventEndDateMoment, now) { const currentYear = now.year(); if (event.fullDayEvent) { const adjustedEnd = eventEndDateMoment.clone().subtract(12, \"hours\"); const effectiveEnd = adjustedEnd.isBefore(eventStartDateMoment) ? eventStartDateMoment.clone() : adjustedEnd; const dateFmt = (eventStartDateMoment.year() === currentYear && effectiveEnd.year() === currentYear) ? \"DD/MM\" : \"DD/MM/YY\"; return eventStartDateMoment.isSame(effectiveEnd, \"d\") ? eventStartDateMoment.format(dateFmt) : `${eventStartDateMoment.format(dateFmt)} - ${effectiveEnd.format(dateFmt)}`; } const dateFmt = (eventStartDateMoment.year() === currentYear && eventEndDateMoment.year() === currentYear) ? \"DD/MM\" : \"DD/MM/YY\"; if (this.isSameDay(eventStartDateMoment, eventEndDateMoment)) { return this.hasEventDuration(event) ? `${eventStartDateMoment.format(dateFmt)} ${eventStartDateMoment.format(\"HH:mm\")} - ${eventEndDateMoment.format(\"HH:mm\")}` : `${eventStartDateMoment.format(dateFmt)} ${eventStartDateMoment.format(\"HH:mm\")}`; } return `${eventStartDateMoment.format(dateFmt)} ${eventStartDateMoment.format(\"HH:mm\")} - ${eventEndDateMoment.format(dateFmt)} ${eventEndDateMoment.format(\"HH:mm\")}`; }, _origBuildAbsoluteTimeText (event, eventStartDateMoment, eventEndDateMoment, now) {" \
+  ); \
+  fs.writeFileSync("defaultmodules/calendar/calendar.js", cal); \
+'
+
+# Run MagicMirror in headless server-only watch mode (clients connect on port 8080/8036)
+CMD ["npm", "run", "server:watch"]

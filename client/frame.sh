@@ -8,14 +8,18 @@ SERVER_IP="192.168.4.45"
 SERVER_PORT="8036"
 MONDAY_FRIDAY="16:00-20:45"
 SATURDAY_SUNDAY="08:00-20:45"
+TARGET_URL=""
 
-if [[ -f "$CONFIG_FILE" ]]; then
-	# shellcheck disable=SC1090
-	source "$CONFIG_FILE"
-fi
+load_config() {
+	if [[ -f "$CONFIG_FILE" ]]; then
+		# shellcheck disable=SC1090
+		source "$CONFIG_FILE"
+	fi
+	TARGET_URL="http://${SERVER_IP}:${SERVER_PORT}"
+}
 
+load_config
 export DISPLAY="${DISPLAY:-:0}"
-TARGET_URL="http://${SERVER_IP}:${SERVER_PORT}"
 KIOSK_PID=""
 PIR_PID=""
 
@@ -83,9 +87,19 @@ stop_children() {
 run_daemon() {
 	trap 'stop_children; exit 0' INT TERM
 	local active=false
+	local last_reload=$SECONDS
 	log "Schedule daemon started (Mon-Fri ${MONDAY_FRIDAY}, Sat-Sun ${SATURDAY_SUNDAY}, server ${TARGET_URL})"
 	display_power off
 	while true; do
+		if (( SECONDS - last_reload >= 3600 )); then
+			local prev_url="$TARGET_URL"
+			load_config
+			last_reload=$SECONDS
+			if [[ "$active" == "true" && "$TARGET_URL" != "$prev_url" ]]; then
+				[[ -n "$KIOSK_PID" ]] && kill "$KIOSK_PID" 2>/dev/null || true
+				pkill -f "${SCRIPT_DIR}/kiosk.py" 2>/dev/null || true
+			fi
+		fi
 		if in_schedule; then
 			if [[ "$active" == "false" ]]; then
 				start_children

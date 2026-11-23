@@ -3,6 +3,22 @@
  * Copy to magicmirror/config/config.js (gitignored) and fill in your own
  * API keys and coordinates before running `docker compose up -d --build`.
  */
+function resolveGoogleCalendarUrl(rawUrl) {
+	try {
+		let parsed = new URL(rawUrl);
+		let cid = parsed.searchParams.get("cid");
+		if (cid) {
+			let normalized = cid.replace(/-/g, "+").replace(/_/g, "/");
+			while (normalized.length % 4 !== 0) {
+				normalized += "=";
+			}
+			let calendarId = normalized.includes("@") ? cid : atob(normalized);
+			return "https://calendar.google.com/calendar/ical/" + encodeURIComponent(calendarId) + "/public/basic.ics";
+		}
+	} catch (e) {}
+	return rawUrl;
+}
+
 let config = {
 	address: "0.0.0.0",
 	port: 8080,
@@ -15,6 +31,8 @@ let config = {
 	logLevel: ["INFO", "LOG", "WARN", "ERROR"],
 	timeFormat: 24,
 	units: "metric",
+	reloadAfterServerRestart: true,
+	watchTargets: ["config/config.js", "config/custom.css"],
 
 	modules: [
 		{
@@ -41,6 +59,39 @@ let config = {
 						flag: "vn",
 					},
 				],
+			},
+		},
+		{
+			module: "calendar",
+			header: "CUỘC HẸN SẮP TỚI",
+			position: "top_center",
+			config: {
+				calendars: [
+					{
+						fetchInterval: 60 * 60 * 1000,
+						symbol: "lich trong nha",
+						url: resolveGoogleCalendarUrl("https://calendar.google.com/calendar/u/0?cid=YOUR_GOOGLE_CALENDAR_CID_OR_ICS_URL"),
+					},
+				],
+				dateFormat: "DD/MM",
+				fullDayEventDateFormat: "DD/MM",
+				showEnd: true,
+				timeFormat: "absolute",
+				urgency: 0,
+			},
+		},
+		{
+			module: "MMM-GoogleSheetsToDo",
+			position: "top_right",
+			header: "Việc cần làm",
+			config: {
+				spreadsheetUrl: "https://docs.google.com/spreadsheets/d/YOUR_SPREADSHEET_ID/edit?usp=sharing",
+				refreshSeconds: 60,
+				showCheckbox: true,
+				maxWidth: 450,
+				itemLimit: 200,
+				fade: true,
+				fadePoint: 0.5,
 			},
 		},
 		{

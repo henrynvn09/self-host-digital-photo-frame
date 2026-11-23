@@ -6,7 +6,7 @@ Running full **Immich** (PostgreSQL, Redis, machine-learning containers, transco
 
 **Photoframe** replaces Immich with a single, unified repository containing:
 1. **`photo-api/`**: A lightweight pure-Go + SQLite + offline GeoNames service that reads Synology photo folders directly (**read-only**), caches **2K (2560×1440)** JPEG previews within a **1GB LRU cap**, and exposes the exact Immich REST subset required by `MMM-ImmichSlideShow`.
-2. **`magicmirror/`**: A thin Docker image extending `karsten13/magicmirror` with pinned modules (`MMM-ImmichSlideShow`, `MMM-Worldclock`, `MMM-OpenWeatherMapForecast`), secret-free sample configuration, and custom CSS.
+2. **`magicmirror/`**: A thin Docker image extending `karsten13/magicmirror` with pinned modules (`MMM-ImmichSlideShow`, `MMM-Worldclock`, `MMM-OpenWeatherMapForecast`), bundled `MMM-GoogleSheetsToDo` and built-in `calendar`, secret-free sample configuration, and custom CSS.
 3. **`client/`**: The proven Raspberry Pi 3B X11 kiosk setup (unified systemd schedule, event-driven GPIO PIR motion sensor, journald logging).
 4. **Root `docker-compose.yml`**: One Synology Container Manager Project running `magicmirror` and `photo-api` together on a private internal Docker network.
 
@@ -59,7 +59,7 @@ self-host-digital-photo-frame/
 ├── AGENTS.md                    # Agent instructions & skills pointers
 ├── CONTEXT.md                   # Canonical domain glossary
 ├── docs/
-│   ├── adr/                     # Architectural Decision Records (0001–0004)
+│   ├── adr/                     # Architectural Decision Records (0001–0005)
 │   ├── agents/                  # Issue tracker, triage labels, domain doc rules
 │   └── specs/                   # Engineering specifications (/to-spec)
 ├── server/
@@ -75,10 +75,10 @@ self-host-digital-photo-frame/
 │   └── magicmirror/
 │       ├── README.md            # MagicMirror config, modules, secrets handling
 │       ├── Dockerfile           # Thin pinned image extending karsten13/magicmirror
-│       ├── config/
-│       │   └── config.js.example
-│       └── css/
-│           └── custom.css
+│       └── config/
+│           ├── config.js.example
+│           ├── custom.css
+│           └── todo-template.csv
 └── client/
     ├── README.md                # Raspberry Pi 3B installation, PIR wiring, schedule, logs
     ├── setup_client.sh

@@ -128,6 +128,8 @@ def main() -> int:
     try:
         while state["running"]:
             time.sleep(3600)
+            cfg = load_config()
+            delay = cfg["SHUTOFF_DELAY"]
     finally:
         cancel_timer()
         pir.close()

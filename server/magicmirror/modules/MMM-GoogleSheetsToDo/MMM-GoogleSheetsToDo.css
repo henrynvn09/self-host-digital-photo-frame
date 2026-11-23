@@ -1,0 +1,22 @@
+.mmm-task-due-date {
+  font-size: 75%;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+.mmm-task-due-date.overdue {
+  color: #dc2626;
+}
+
+.mmm-task-due-date.due-today {
+  color: #059669;
+}
+
+.mmm-task-due-date.upcoming {
+  color: #3b82f6;
+}
+
+.mmm-task-completed span {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
