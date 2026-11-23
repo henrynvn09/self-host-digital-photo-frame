@@ -8,7 +8,7 @@ Minimal 4-file client for a **1 GB Raspberry Pi 4** (Debian 12 Bookworm, X11, 27
 - `frame.sh` — Unified controller (`./frame.sh daemon`, `./frame.sh browser`, `./frame.sh on`, `./frame.sh off`).
 - `kiosk.py` — Fullscreen hardware-accelerated WebKitGTK viewer with hidden cursor and 5s auto-retry.
 - `pir.py` — Event-driven GPIO 24 PIR motion sensor using Bookworm X11 DPMS (`xset dpms`) + `vcgencmd` fallback.
-- `config.conf.sample` — Template for `config.conf` (`SERVER_IP`, schedule, PIR pin/timeout).
+- `config.conf.sample` — Template for `config.conf` (`SERVER_IP`, schedule, PIR pin/timeout). `frame.sh` and `pir.py` re-read `config.conf` automatically once every hour, or immediately via `sudo systemctl restart digitalframe.service`.
 
 ## 3-Step Setup on Raspberry Pi 4
 

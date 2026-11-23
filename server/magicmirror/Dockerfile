@@ -38,5 +38,15 @@ COPY --chown=node:node modules/MMM-GoogleSheetsToDo /opt/magic_mirror/modules/MM
 
 WORKDIR /opt/magic_mirror
 
-# Run MagicMirror in headless server-only mode (clients connect on port 8080/8036)
-CMD ["npm", "run", "server"]
+RUN node -e ' \
+  const fs = require("node:fs"); \
+  let src = fs.readFileSync("serveronly/watcher.js", "utf8"); \
+  src = src.replace( \
+    "Log.log(`Watching file: ${file}`);", \
+    "fs.watchFile(file, { interval: 2000 }, (curr, prev) => { if (curr.mtimeMs !== prev.mtimeMs || curr.size !== prev.size) { try { const cp = getConfigFilePath(); delete require.cache[require.resolve(cp)]; require(cp); } catch (e) { Log.error(`[watchFile] Ignoring invalid config.js save: ${e.message}`); return; } restartServer(`File changed: ${path.basename(file)} — restarting...`); } });\n\t\tLog.log(`Watching file: ${file}`);" \
+  ); \
+  fs.writeFileSync("serveronly/watcher.js", src); \
+'
+
+# Run MagicMirror in headless server-only watch mode (clients connect on port 8080/8036)
+CMD ["npm", "run", "server:watch"]

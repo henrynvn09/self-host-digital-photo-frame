@@ -59,7 +59,7 @@ self-host-digital-photo-frame/
 ├── AGENTS.md                    # Agent instructions & skills pointers
 ├── CONTEXT.md                   # Canonical domain glossary
 ├── docs/
-│   ├── adr/                     # Architectural Decision Records (0001–0004)
+│   ├── adr/                     # Architectural Decision Records (0001–0005)
 │   ├── agents/                  # Issue tracker, triage labels, domain doc rules
 │   └── specs/                   # Engineering specifications (/to-spec)
 ├── server/
@@ -75,10 +75,10 @@ self-host-digital-photo-frame/
 │   └── magicmirror/
 │       ├── README.md            # MagicMirror config, modules, secrets handling
 │       ├── Dockerfile           # Thin pinned image extending karsten13/magicmirror
-│       ├── config/
-│       │   └── config.js.example
-│       └── css/
-│           └── custom.css
+│       └── config/
+│           ├── config.js.example
+│           ├── custom.css
+│           └── todo-template.csv
 └── client/
     ├── README.md                # Raspberry Pi 3B installation, PIR wiring, schedule, logs
     ├── setup_client.sh

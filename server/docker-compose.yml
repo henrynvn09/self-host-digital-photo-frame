@@ -44,8 +44,7 @@ services:
     environment:
       - TZ=${TZ:-America/Los_Angeles}
     volumes:
-      - ./magicmirror/config/config.js:/opt/magic_mirror/config/config.js:ro
-      - ./magicmirror/css/custom.css:/opt/magic_mirror/config/custom.css:ro
+      - ./magicmirror/config:/opt/magic_mirror/config:ro
     ports:
       - "${MAGICMIRROR_PORT:-8036}:8080"
     networks:

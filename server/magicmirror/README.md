@@ -22,7 +22,7 @@ From the `server/` directory:
    - For **`calendar` ("CUỘC HẸN SẮP TỚI")**: paste either your Google Calendar share link (`https://calendar.google.com/calendar/u/0?cid=...` for a public calendar) or the **Secret address in iCal format** (`.ics`) into `resolveGoogleCalendarUrl(...)` under `calendars[0].url` (`fetchInterval: 60 * 60 * 1000` refreshes every 1 hour).
    - For **`MMM-GoogleSheetsToDo` ("Việc cần làm")**: import [`magicmirror/config/todo-template.csv`](config/todo-template.csv) into Google Sheets (*File → Import → Upload*), select Column A (`Done`) and click *Insert → Checkbox*, share the sheet as **Anyone with the link → Viewer**, and paste the Google Sheet URL into `spreadsheetUrl`. Supports 1-column task lists (`Mua sữa`, `Mua trứng`, `Nộp tiền bh`) or 2-column checkbox + task sheets (`[Checkbox, Task]` or `[Task, Checkbox]`), refreshing every `refreshSeconds: 60`.
    - Keep `url: "http://photo-api:2283"` — it talks directly to `photo-api` over the internal Docker network.
-3. **Customize styling (optional)**: edit `magicmirror/css/custom.css`.
+3. **Customize styling (optional)**: edit `magicmirror/config/custom.css`. Because `magicmirror/config/` is mounted as a directory and MagicMirror runs `npm run server:watch` with `reloadAfterServerRestart: true`, edits to `magicmirror/config/config.js` and `magicmirror/config/custom.css` live-reload connected displays automatically without `docker compose restart`.
 4. **Start the stack** from `server/`:
    ```bash
    docker compose up -d --build

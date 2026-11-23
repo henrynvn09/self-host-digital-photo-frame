@@ -31,6 +31,8 @@ let config = {
 	logLevel: ["INFO", "LOG", "WARN", "ERROR"],
 	timeFormat: 24,
 	units: "metric",
+	reloadAfterServerRestart: true,
+	watchTargets: ["config/config.js", "config/custom.css"],
 
 	modules: [
 		{

@@ -17,7 +17,7 @@ Runs `photo-api` (pure-Go 2K photo indexer + 1 GB LRU cache, internal port `2283
    docker compose up -d --build
    ```
 
-Open `http://<nas-ip>:8036` in any browser (or point `client/config.conf` on the Raspberry Pi 4 to `<nas-ip>`).
+Open `http://<nas-ip>:8036` in any browser (or point `client/config.conf` on the Raspberry Pi 4 to `<nas-ip>`). `magicmirror/config/` is mounted as a directory and watched with `server:watch`, so edits to `magicmirror/config/config.js` or `magicmirror/config/custom.css` reload automatically on connected displays without restarting the container.
 
 ## Common Commands
 

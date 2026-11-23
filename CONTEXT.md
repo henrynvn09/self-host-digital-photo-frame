@@ -35,3 +35,11 @@ _Avoid_: Display box, Pi server, kiosk browser
 **Display Schedule**:
 The configured weekday and weekend active hours during which the frame client runs MagicMirror and responds to motion detection.
 _Avoid_: Cron window, power timer, uptime rules
+
+**Widget Feed**:
+An external data source (Google Calendar iCal feed or Google Spreadsheet CSV export) polled on a configurable interval to render overlay widgets on the frame.
+_Avoid_: Data plugin, third-party sync, remote API
+
+**Live Config**:
+Runtime settings in the mounted configuration directory (`config.js`, `custom.css`, and `config.conf`) that apply dynamically without manually restarting containers or system services.
+_Avoid_: Hot patch, dynamic env, runtime override
