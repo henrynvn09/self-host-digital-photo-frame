@@ -4,11 +4,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/config.conf"
 
-SERVER_IP="192.168.4.45"
-SERVER_PORT="8036"
-MONDAY_FRIDAY="16:00-20:45"
-SATURDAY_SUNDAY="08:00-20:45"
+SERVER_IP="${SERVER_IP:-192.168.4.45}"
+SERVER_PORT="${SERVER_PORT:-8036}"
+MONDAY_FRIDAY="${MONDAY_FRIDAY:-16:00-20:45}"
+SATURDAY_SUNDAY="${SATURDAY_SUNDAY:-08:00-20:45}"
+DEBUG="${DEBUG:-false}"
 TARGET_URL=""
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $*"; }
+debug_log() {
+	if [[ "$DEBUG" == "true" || "$DEBUG" == "TRUE" ]]; then
+		echo "[$(date '+%Y-%m-%d %H:%M:%S')] [DEBUG] $*"
+	fi
+}
 
 load_config() {
 	if [[ -f "$CONFIG_FILE" ]]; then
@@ -16,14 +24,40 @@ load_config() {
 		source "$CONFIG_FILE"
 	fi
 	TARGET_URL="http://${SERVER_IP}:${SERVER_PORT}"
+	debug_log "Loaded config from ${CONFIG_FILE}: SERVER=${TARGET_URL}, MON_FRI=${MONDAY_FRIDAY}, SAT_SUN=${SATURDAY_SUNDAY}, DEBUG=${DEBUG}"
+}
+
+probe_url() {
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsS --max-time 2 "${TARGET_URL}" >/dev/null 2>&1
+	elif command -v nc >/dev/null 2>&1; then
+		nc -z -w 2 "${SERVER_IP}" "${SERVER_PORT}" >/dev/null 2>&1
+	else
+		timeout 2 bash -c "echo > /dev/tcp/${SERVER_IP}/${SERVER_PORT}" 2>/dev/null
+	fi
+}
+
+check_server() {
+	local max_attempts="${1:-5}"
+	local delay="${2:-3}"
+	for i in $(seq 1 "$max_attempts"); do
+		log "Checking server ${TARGET_URL} (attempt ${i}/${max_attempts})..."
+		if probe_url; then
+			log "Server ${TARGET_URL} is reachable."
+			return 0
+		fi
+		if [[ $i -lt $max_attempts ]]; then
+			sleep "$delay"
+		fi
+	done
+	log "WARNING: Server ${TARGET_URL} unreachable after ${max_attempts} attempts."
+	return 1
 }
 
 load_config
 export DISPLAY="${DISPLAY:-:0}"
 KIOSK_PID=""
 PIR_PID=""
-
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 display_power() {
 	local mode="$1"
@@ -56,15 +90,19 @@ launch_browser() {
 
 in_schedule() {
 	local range="$MONDAY_FRIDAY"
-	[[ $(date +%u) -ge 6 ]] && range="$SATURDAY_SUNDAY"
+	local day_num
+	day_num=$(date +%u)
+	[[ $day_num -ge 6 ]] && range="$SATURDAY_SUNDAY"
 	local on_str="${range%%-*}" off_str="${range##*-}"
 	local now_min=$((10#$(date +%H) * 60 + 10#$(date +%M)))
 	local on_min=$((10#${on_str%%:*} * 60 + 10#${on_str##*:}))
 	local off_min=$((10#${off_str%%:*} * 60 + 10#${off_str##*:}))
+	debug_log "Schedule check: day=${day_num}, range=${range}, now_min=${now_min}, window=[${on_min}, ${off_min})"
 	[[ $now_min -ge $on_min && $now_min -lt $off_min ]]
 }
 
 start_children() {
+	check_server 3 2 || true
 	display_power on
 	"$0" browser &
 	KIOSK_PID=$!
@@ -120,7 +158,8 @@ case "${1:-daemon}" in
 	daemon)   run_daemon ;;
 	browser)  display_power on; launch_browser ;;
 	pir-test) PIR_DEBUG=true exec python3 "${SCRIPT_DIR}/pir.py" --test ;;
+	check)    check_server "${2:-5}" "${3:-3}" ;;
 	on)       display_power on ;;
 	off)      stop_children ;;
-	*)        echo "Usage: $0 {daemon|browser|pir-test|on|off}" >&2; exit 1 ;;
+	*)        echo "Usage: $0 {daemon|browser|pir-test|check|on|off}" >&2; exit 1 ;;
 esac

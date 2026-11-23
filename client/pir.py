@@ -108,9 +108,10 @@ def main() -> int:
         return 1
 
     state = {"off": is_display_off(), "timer": None, "running": True}
-    log(
-        f"Listening on GPIO {cfg['PIR_PIN']} "
-        f"(timeout={delay}s, display_off={state['off']}, motion={pir.motion_detected})"
+    print(
+        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [PIR] Started on GPIO {cfg['PIR_PIN']} "
+        f"(timeout={delay}s, display_off={state['off']}, debug={debug})",
+        flush=True,
     )
 
     def cancel_timer():
