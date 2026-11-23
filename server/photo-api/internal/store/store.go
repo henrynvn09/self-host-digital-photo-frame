@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"hash/fnv"
+	"math/rand"
 	"path/filepath"
 	"strings"
 	"time"
@@ -263,12 +265,18 @@ func (s *Store) SearchMetadata(ctx context.Context, p SearchParams) (SearchResul
 
 func (s *Store) SearchRandom(ctx context.Context, takenAfter, takenBefore *time.Time, size int) ([]Asset, error) {
 	now := time.Now().UTC()
-	return s.SearchRandomAt(ctx, takenAfter, takenBefore, size, now.YearDay())
+	return s.SearchRandomAtYear(ctx, takenAfter, takenBefore, size, now.YearDay(), now.Year())
 }
 
-// SearchRandomAt performs deterministic pseudorandom sampling without replacement based on dayOfYear.
-// It requires zero database writes, eliminates lock contention, and provides idempotent daily pools.
+// SearchRandomAt performs deterministic multi-round pseudorandom sampling without replacement based on dayOfYear.
+// It uses the current calendar year to salt the seed.
 func (s *Store) SearchRandomAt(ctx context.Context, takenAfter, takenBefore *time.Time, size int, dayOfYear int) ([]Asset, error) {
+	return s.SearchRandomAtYear(ctx, takenAfter, takenBefore, size, dayOfYear, time.Now().UTC().Year())
+}
+
+// SearchRandomAtYear performs deterministic multi-round pseudorandom sampling without replacement with seamless straddle stitch.
+// It requires zero database writes, eliminates lock contention, and provides idempotent daily pools.
+func (s *Store) SearchRandomAtYear(ctx context.Context, takenAfter, takenBefore *time.Time, size int, dayOfYear int, year int) ([]Asset, error) {
 	if size <= 0 {
 		size = 100
 	}
@@ -289,74 +297,164 @@ func (s *Store) SearchRandomAt(ctx context.Context, takenAfter, takenBefore *tim
 
 	where, args := buildDateWhere(takenAfter, takenBefore)
 
-	// For anniversary / date-bounded queries: Stateless Deterministic Permutation
-	// 1. Count matching rows in the anniversary window
-	var total int
-	countQ := `SELECT COUNT(*) FROM assets` + where
-	if err := s.db.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
+	// Fetch all matching IDs in index order
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM assets`+where+` ORDER BY id ASC`, args...)
+	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
+
+	var allIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		allIDs = append(allIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	total := len(allIDs)
 	if total == 0 {
 		return []Asset{}, nil
 	}
 
-	// Under-fill: If fewer assets exist in this window than requested, return all of them
-	if total <= size {
-		q := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY id ASC`, assetColumns, where)
-		rows, err := s.db.QueryContext(ctx, q, args...)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		return scanAssets(rows)
-	}
-
-	// Compute day-based cyclic offset: visits every asset without replacement before looping
 	if dayOfYear <= 0 {
 		dayOfYear = 1
 	}
-	offset := ((dayOfYear - 1) * size) % total
 
-	// Query deterministic slice
-	if offset+size <= total {
-		q := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY id ASC LIMIT ? OFFSET ?`, assetColumns, where)
-		qArgs := append(append([]any{}, args...), size, offset)
-		rows, err := s.db.QueryContext(ctx, q, qArgs...)
-		if err != nil {
-			return nil, err
+	// Under-fill: If total matching assets in this window <= requested size,
+	// return all assets permuted with a daily seed so order is never frozen/static
+	if total <= size {
+		deck := permuteIDs(allIDs, year, takenAfter, takenBefore, dayOfYear-1)
+		return s.getAssetsByIDs(ctx, deck)
+	}
+
+	// Multi-Round Virtual Concatenated Tape with Seamless Straddle Stitch:
+	globalStart := (dayOfYear - 1) * size
+	round1 := globalStart / total
+	offset1 := globalStart % total
+
+	deck1 := s.getRoundDeck(allIDs, year, takenAfter, takenBefore, size, round1)
+
+	var targetIDs []string
+	if offset1+size <= total {
+		// Single-round slice: completely contained in round1
+		targetIDs = deck1[offset1 : offset1+size]
+	} else {
+		// Seamless Straddle Stitch:
+		// Part 1: take remaining items from round1 (exhausts round1 cleanly)
+		part1 := deck1[offset1:]
+
+		// Part 2: advance to round2 = round1 + 1 (freshly shuffled with round2 seed)
+		round2 := round1 + 1
+		deck2 := s.getRoundDeck(allIDs, year, takenAfter, takenBefore, size, round2)
+		needed := size - len(part1)
+		part2 := deck2[:needed]
+
+		targetIDs = make([]string, 0, size)
+		targetIDs = append(targetIDs, part1...)
+		targetIDs = append(targetIDs, part2...)
+	}
+
+	return s.getAssetsByIDs(ctx, targetIDs)
+}
+
+func (s *Store) getRoundDeck(allIDs []string, year int, takenAfter, takenBefore *time.Time, size int, round int) []string {
+	total := len(allIDs)
+	if total <= size || round == 0 {
+		return permuteIDs(allIDs, year, takenAfter, takenBefore, round)
+	}
+
+	deck := permuteIDs(allIDs, year, takenAfter, takenBefore, round)
+	rem := (round * total) % size
+	if rem == 0 {
+		return deck
+	}
+
+	prevDeck := permuteIDs(allIDs, year, takenAfter, takenBefore, round-1)
+	tailCount := rem
+	tailItems := make(map[string]bool, tailCount)
+	for _, id := range prevDeck[total-tailCount:] {
+		tailItems[id] = true
+	}
+
+	headNeeded := size - tailCount
+	j := headNeeded
+	for i := 0; i < headNeeded; i++ {
+		if tailItems[deck[i]] {
+			for j < total && tailItems[deck[j]] {
+				j++
+			}
+			if j < total {
+				deck[i], deck[j] = deck[j], deck[i]
+				j++
+			}
 		}
-		defer rows.Close()
-		return scanAssets(rows)
+	}
+	return deck
+}
+
+func permuteIDs(ids []string, year int, takenAfter, takenBefore *time.Time, round int) []string {
+	deck := make([]string, len(ids))
+	copy(deck, ids)
+
+	var afterStr, beforeStr string
+	if takenAfter != nil {
+		afterStr = takenAfter.UTC().Format(time.RFC3339)
+	}
+	if takenBefore != nil {
+		beforeStr = takenBefore.UTC().Format(time.RFC3339)
 	}
 
-	// Wraparound slice: take remaining items to end of array + items from beginning
-	firstCount := total - offset
-	q1 := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY id ASC LIMIT ? OFFSET ?`, assetColumns, where)
-	q1Args := append(append([]any{}, args...), firstCount, offset)
-	rows1, err := s.db.QueryContext(ctx, q1, q1Args...)
+	h := fnv.New64a()
+	_, _ = fmt.Fprintf(h, "%d:%s:%s:%d", year, afterStr, beforeStr, round)
+	seed := int64(h.Sum64())
+
+	r := rand.New(rand.NewSource(seed))
+	r.Shuffle(len(deck), func(i, j int) {
+		deck[i], deck[j] = deck[j], deck[i]
+	})
+	return deck
+}
+
+func (s *Store) getAssetsByIDs(ctx context.Context, ids []string) ([]Asset, error) {
+	if len(ids) == 0 {
+		return []Asset{}, nil
+	}
+
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	q := fmt.Sprintf(`SELECT %s FROM assets WHERE id IN (%s)`, assetColumns, strings.Join(placeholders, ","))
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows1.Close()
-	items1, err := scanAssets(rows1)
+	defer rows.Close()
+
+	assets, err := scanAssets(rows)
 	if err != nil {
 		return nil, err
 	}
 
-	secondCount := size - firstCount
-	q2 := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY id ASC LIMIT ? OFFSET 0`, assetColumns, where)
-	q2Args := append(append([]any{}, args...), secondCount)
-	rows2, err := s.db.QueryContext(ctx, q2, q2Args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows2.Close()
-	items2, err := scanAssets(rows2)
-	if err != nil {
-		return nil, err
+	byID := make(map[string]Asset, len(assets))
+	for _, a := range assets {
+		byID[a.ID] = a
 	}
 
-	return append(items1, items2...), nil
+	ordered := make([]Asset, 0, len(ids))
+	for _, id := range ids {
+		if a, ok := byID[id]; ok {
+			ordered = append(ordered, a)
+		}
+	}
+	return ordered, nil
 }
 
 // ResetDealt clears dealt timestamps for assets within the specified date window (or all assets if nil).
