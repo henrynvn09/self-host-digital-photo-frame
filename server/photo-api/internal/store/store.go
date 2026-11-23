@@ -14,7 +14,7 @@ import (
 )
 
 const assetColumns = `id, rel_path, mtime, size, taken_at, taken_year, taken_month, taken_day,
-       city, state, country, album, orientation, width, height, indexed_at, dealt_at`
+       city, state, country, album, orientation, width, height, indexed_at`
 
 type Asset struct {
 	ID          string
@@ -33,7 +33,6 @@ type Asset struct {
 	Width       int
 	Height      int
 	IndexedAt   time.Time
-	DealtAt     *time.Time
 }
 
 type PathMeta struct {
@@ -112,8 +111,7 @@ CREATE TABLE IF NOT EXISTS assets (
 	orientation INTEGER NOT NULL DEFAULT 1,
 	width INTEGER NOT NULL DEFAULT 0,
 	height INTEGER NOT NULL DEFAULT 0,
-	indexed_at TEXT NOT NULL,
-	dealt_at INTEGER
+	indexed_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_assets_taken_at ON assets(taken_at);
 CREATE INDEX IF NOT EXISTS idx_assets_month_day ON assets(taken_month, taken_day, taken_year);
@@ -122,12 +120,6 @@ CREATE INDEX IF NOT EXISTS idx_assets_rel_path ON assets(rel_path);
 	_, err := s.db.Exec(ddl)
 	if err != nil {
 		return fmt.Errorf("migrate sqlite schema: %w", err)
-	}
-
-	// For pre-existing databases without dealt_at column
-	_, _ = s.db.Exec(`ALTER TABLE assets ADD COLUMN dealt_at INTEGER`)
-	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_assets_taken_dealt ON assets(taken_at, dealt_at)`); err != nil {
-		return fmt.Errorf("create idx_assets_taken_dealt: %w", err)
 	}
 	return nil
 }
@@ -486,14 +478,6 @@ func (s *Store) getAssetsByIDs(ctx context.Context, ids []string) ([]Asset, erro
 	return ordered, nil
 }
 
-// ResetDealt clears dealt timestamps for assets within the specified date window (or all assets if nil).
-func (s *Store) ResetDealt(ctx context.Context, takenAfter, takenBefore *time.Time) error {
-	where, args := buildDateWhere(takenAfter, takenBefore)
-	q := `UPDATE assets SET dealt_at = NULL` + where
-	_, err := s.db.ExecContext(ctx, q, args...)
-	return err
-}
-
 func (s *Store) MemoriesForDate(ctx context.Context, month, day, currentYear int) ([]Asset, error) {
 	q := fmt.Sprintf(`SELECT %s FROM assets WHERE taken_month = ? AND taken_day = ? AND taken_year < ? ORDER BY taken_year DESC, taken_at ASC`, assetColumns)
 	rows, err := s.db.QueryContext(ctx, q, month, day, currentYear)
@@ -528,23 +512,17 @@ type rowScanner interface {
 func scanAsset(r rowScanner) (Asset, error) {
 	var a Asset
 	var takenStr, indexedStr string
-	var dealtAtVal sql.NullInt64
 	err := r.Scan(
 		&a.ID, &a.RelPath, &a.Mtime, &a.Size,
 		&takenStr, &a.TakenYear, &a.TakenMonth, &a.TakenDay,
 		&a.City, &a.State, &a.Country, &a.Album,
 		&a.Orientation, &a.Width, &a.Height, &indexedStr,
-		&dealtAtVal,
 	)
 	if err != nil {
 		return Asset{}, err
 	}
 	a.TakenAt, _ = time.Parse(time.RFC3339, takenStr)
 	a.IndexedAt, _ = time.Parse(time.RFC3339, indexedStr)
-	if dealtAtVal.Valid {
-		t := time.Unix(dealtAtVal.Int64, 0).UTC()
-		a.DealtAt = &t
-	}
 	return a, nil
 }
 
