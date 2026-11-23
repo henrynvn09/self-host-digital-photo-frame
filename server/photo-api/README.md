@@ -7,7 +7,7 @@ Lightweight, high-performance pure-Go photo indexing and serving service built f
 - **Synology Hygiene**: Runs as non-root `PUID:PGID` (`1026:100`) and automatically skips `@eaDir`, `#recycle`, hidden `.*` directories, and custom `EXCLUDE_PATTERNS`.
 - **Incremental `Scan`**: Diffs by `(relative_path, mtime, size)` on startup, periodic interval (`SCAN_INTERVAL`), and manual `POST /api/admin/scan`.
 - **Offline Worldwide Geocoding**: Bundles GeoNames `cities1000` (~150k+ cities) into the Docker image and unloads the index between scans to keep idle RAM ~12–20MB.
-- **Lazy 2K `Preview`s + 1GB LRU Cache**: Scales JPEG/PNG/WebP/HEIC on demand to fit within 2560×1440 JPEG (quality 88) with EXIF auto-rotation and singleflight deduplication.
+- **Lazy 2K `Preview`s + 1GB In-Memory LRU Cache**: Scales JPEG/PNG/WebP/HEIC on demand to fit within 2560×1440 JPEG (quality 88) with EXIF auto-rotation, singleflight deduplication, and an in-memory LRU cache (`CACHE_MODE=memory`) that produces **0 disk writes** to protect Synology spinning HDDs from thrashing.
 
 ## Environment Variables
 
@@ -15,7 +15,7 @@ Lightweight, high-performance pure-Go photo indexing and serving service built f
 | :--- | :--- | :--- |
 | `PORT` | `2283` | HTTP listen port |
 | `PHOTOS_DIR` | `/photos` | Read-only mounted `Library` directory |
-| `DATA_DIR` | `/data` | Writable directory for `index.db` and `cache/` |
+| `DATA_DIR` | `/data` | Writable directory for `index.db` (and disk cache when `CACHE_MODE=disk`) |
 | `GEONAMES_DIR` | `/app/geonames` | Bundled offline GeoNames dataset directory |
 | `API_KEY` | *(empty)* | Optional static `x-api-key` required on all non-ping routes |
 | `SCAN_INTERVAL` | `30m` | Periodic incremental scan interval |
@@ -23,7 +23,9 @@ Lightweight, high-performance pure-Go photo indexing and serving service built f
 | `MAX_WIDTH` | `2560` | Max preview width (2K native) |
 | `MAX_HEIGHT` | `2560` | Max preview height (2K native, portrait & landscape) |
 | `JPEG_QUALITY` | `88` | JPEG quality (1–100) |
-| `CACHE_MAX_MB` | `1024` | Max preview disk cache size in MB (LRU eviction) |
+| `CACHE_MODE` | `memory` | Cache backend: `memory` (default, in-RAM LRU, 0 disk writes), `disk`, or `hybrid` |
+| `CACHE_MAX_MB` | `1024` | Max preview cache size in MB (1GB default) |
+| `MAX_CONCURRENT_DECODES` | `2` | Max parallel image decodes to bound peak memory |
 | `PREBAKE_BLUR` | `false` | When `true`, pre-composites blurred background bars on the NAS |
 | `FRAME_WIDTH` | `1440` | Target frame width when `PREBAKE_BLUR=true` |
 | `FRAME_HEIGHT` | `2560` | Target frame height when `PREBAKE_BLUR=true` |
