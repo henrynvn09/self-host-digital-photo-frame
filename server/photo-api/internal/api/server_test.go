@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -635,4 +636,81 @@ func writeDMS(buf *bytes.Buffer, deg float64) {
 	_ = binary.Write(buf, be, uint32(1))
 	_ = binary.Write(buf, be, s)
 	_ = binary.Write(buf, be, uint32(10000))
+}
+
+func TestAPISearchRandomExhaustionCycles(t *testing.T) {
+	env := setupTestEnv(t, 50, "memory")
+
+	// Create 5 images in year 2024
+	for i := 0; i < 5; i++ {
+		name := filepath.Join("2024", "Trip", fmt.Sprintf("cycle_photo_%d.png", i))
+		writePNG(t, filepath.Join(env.photosDir, name), 400, 300)
+	}
+
+	if rec := env.doJSON(t, "POST", "/api/admin/scan", nil, true); rec.Code != http.StatusOK {
+		t.Fatalf("scan failed: %d", rec.Code)
+	}
+
+	searchBody := map[string]any{
+		"size":        2,
+		"type":        "IMAGE",
+		"takenAfter":  "2024-01-01T00:00:00Z",
+		"takenBefore": "2024-12-31T23:59:59Z",
+	}
+
+	// Call 1: size=2 -> returns 2 unique photos
+	rec1 := env.doJSON(t, "POST", "/api/search/random", searchBody, true)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("call 1 failed: %d", rec1.Code)
+	}
+	var items1 []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec1.Body.Bytes(), &items1); err != nil || len(items1) != 2 {
+		t.Fatalf("expected 2 items in call 1, got %d (err: %v)", len(items1), err)
+	}
+
+	// Call 2: size=2 -> returns 2 disjoint unique photos
+	rec2 := env.doJSON(t, "POST", "/api/search/random", searchBody, true)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("call 2 failed: %d", rec2.Code)
+	}
+	var items2 []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &items2); err != nil || len(items2) != 2 {
+		t.Fatalf("expected 2 items in call 2, got %d (err: %v)", len(items2), err)
+	}
+
+	for _, it1 := range items1 {
+		for _, it2 := range items2 {
+			if it1.ID == it2.ID {
+				t.Fatalf("asset %s was returned in both call 1 and call 2 (sampling was not without replacement)", it1.ID)
+			}
+		}
+	}
+
+	// Call 3: size=2 -> only 1 unseen photo remains (5 total - 2 - 2). Under-fill: returns 1 item!
+	rec3 := env.doJSON(t, "POST", "/api/search/random", searchBody, true)
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("call 3 failed: %d", rec3.Code)
+	}
+	var items3 []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec3.Body.Bytes(), &items3); err != nil || len(items3) != 1 {
+		t.Fatalf("expected under-fill with 1 item in call 3, got %d", len(items3))
+	}
+
+	// Call 4: Unseen pool reached 0. Auto-reset should trigger and return 2 items!
+	rec4 := env.doJSON(t, "POST", "/api/search/random", searchBody, true)
+	if rec4.Code != http.StatusOK {
+		t.Fatalf("call 4 failed: %d", rec4.Code)
+	}
+	var items4 []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec4.Body.Bytes(), &items4); err != nil || len(items4) != 2 {
+		t.Fatalf("expected 2 items in call 4 after auto-reset, got %d", len(items4))
+	}
 }
