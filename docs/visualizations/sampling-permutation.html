@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Anniversary Sampling: Multi-Round Reshuffled Permutation Visualizer</title>
+  <title>Anniversary Sampling: Multi-Round Reshuffled Permutation with Seamless Straddle Stitch</title>
   <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
   <style>
     :root {
@@ -37,15 +37,15 @@
           <div class="flex items-center gap-2">
             <span class="inline-block w-3 h-3 rounded-full bg-indigo-500 animate-pulse"></span>
             <h1 class="text-xl md:text-2xl font-bold text-white">Multi-Round Reshuffled Permutation</h1>
-            <span class="px-2 py-0.5 rounded text-[11px] font-mono bg-indigo-950 text-indigo-300 border border-indigo-800">Photoframe Architecture</span>
+            <span class="px-2 py-0.5 rounded text-[11px] font-mono bg-indigo-950 text-indigo-300 border border-indigo-800">Seamless Straddle Stitch</span>
           </div>
           <p class="text-slate-400 text-xs mt-1.5 max-w-2xl">
-            Stateless anniversary sampling with zero database writes. Within each round, daily slices are 100% disjoint without replacement. When a round finishes, the entire deck is reshuffled with a new deterministic seed.
+            Stateless anniversary sampling with zero DB writes. When a round finishes mid-day, it seamlessly straddles into the next freshly-shuffled round so <strong>every day receives the full requested batch size (K)</strong> without partial drops.
           </p>
         </div>
         <div class="flex items-center gap-2">
           <span class="text-[11px] font-mono px-3 py-1.5 bg-emerald-950/80 text-emerald-300 border border-emerald-800/60 rounded-md font-semibold">
-            Zero DB Writes • Stateless
+            Always Full Size (K) • Zero DB Writes
           </span>
         </div>
       </div>
@@ -55,32 +55,32 @@
     <div class="space-y-2">
       <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Quick Presets:</div>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-2.5">
-        <button onclick="applyPreset(35, 100, 2026)" 
-                class="px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-left transition group">
-          <div class="text-xs font-semibold text-amber-300">Under-Fill (N=35, K=100)</div>
-          <div class="text-[11px] text-slate-400 font-mono mt-0.5">daysPerRound = 1</div>
-          <div class="text-[10px] text-slate-500 mt-1">Sparse years. Every day is a fresh shuffle of all 35 photos!</div>
-        </button>
-
         <button onclick="applyPreset(150, 100, 2026)" 
                 class="px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 border border-indigo-500/50 rounded-lg text-left transition group">
-          <div class="text-xs font-semibold text-indigo-300">Tail Flush (N=150, K=100)</div>
-          <div class="text-[11px] text-slate-400 font-mono mt-0.5">daysPerRound = 2</div>
-          <div class="text-[10px] text-slate-500 mt-1">Day 1: 100 items. Day 2: 50 items. Day 3: Fresh round!</div>
+          <div class="text-xs font-semibold text-indigo-300">Seamless Straddle (N=150, K=100)</div>
+          <div class="text-[11px] text-slate-400 font-mono mt-0.5">Day 2: 50 from R0 + 50 from R1</div>
+          <div class="text-[10px] text-slate-500 mt-1">Exhausts R0, starts R1. Always 100 photos!</div>
         </button>
 
         <button onclick="applyPreset(300, 100, 2026)" 
                 class="px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-left transition group">
-          <div class="text-xs font-semibold text-emerald-300">Clean 3-Day (N=300, K=100)</div>
-          <div class="text-[11px] text-slate-400 font-mono mt-0.5">daysPerRound = 3</div>
-          <div class="text-[10px] text-slate-500 mt-1">3 days of disjoint slices, then Round 2 reshuffles anew.</div>
+          <div class="text-xs font-semibold text-emerald-300">Clean Multiple (N=300, K=100)</div>
+          <div class="text-[11px] text-slate-400 font-mono mt-0.5">3 days per round</div>
+          <div class="text-[10px] text-slate-500 mt-1">3 days disjoint, then Round 1 reshuffles anew.</div>
         </button>
 
-        <button onclick="applyPreset(20, 6, 2026)" 
+        <button onclick="applyPreset(35, 100, 2026)" 
                 class="px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-left transition group">
-          <div class="text-xs font-semibold text-cyan-300">Small Multi-Day (N=20, K=6)</div>
-          <div class="text-[11px] text-slate-400 font-mono mt-0.5">daysPerRound = 4</div>
-          <div class="text-[10px] text-slate-500 mt-1">Days 1-3 take 6 each; Day 4 takes 2 tail. Day 5 reshuffles.</div>
+          <div class="text-xs font-semibold text-amber-300">Under-Fill (N=35, K=100)</div>
+          <div class="text-[11px] text-slate-400 font-mono mt-0.5">N &le; K</div>
+          <div class="text-[10px] text-slate-500 mt-1">Sparse years. Returns all 35 in fresh order daily.</div>
+        </button>
+
+        <button onclick="applyPreset(20, 7, 2026)" 
+                class="px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-left transition group">
+          <div class="text-xs font-semibold text-cyan-300">Prime Straddle (N=20, K=7)</div>
+          <div class="text-[11px] text-slate-400 font-mono mt-0.5">Non-aligned boundary</div>
+          <div class="text-[10px] text-slate-500 mt-1">Day 3 stitches 6 from R0 + 1 from R1 = 7.</div>
         </button>
       </div>
     </div>
@@ -153,32 +153,33 @@
       <div>
         <div class="flex items-center gap-2">
           <span id="roundBadge" class="px-2.5 py-0.5 rounded text-xs font-bold font-mono bg-indigo-500 text-white">Round 0</span>
-          <span id="dayInRoundText" class="text-xs text-slate-300 font-medium">Day 1 of 2 in this round</span>
+          <span id="straddleStatusText" class="text-xs text-slate-300 font-medium">Single-Round Slice</span>
         </div>
         <div id="seedText" class="text-[11px] font-mono text-indigo-300 mt-1">
-          Seed: hash(2026 : anniversary : Round 0) = 0x8a3f1c...
+          Seed R0: hash(2026:anniversary:0)
         </div>
       </div>
       <div id="sliceActionTag" class="text-right">
-        <div id="sliceRangeText" class="text-sm font-mono font-bold text-emerald-400">Items [0 .. 99] (100 photos)</div>
-        <div id="sliceTypeDesc" class="text-[10px] text-slate-400 mt-0.5">Disjoint First Slice of Round 0</div>
+        <div id="sliceRangeText" class="text-sm font-mono font-bold text-emerald-400">100 / 100 photos delivered</div>
+        <div id="sliceTypeDesc" class="text-[10px] text-slate-400 mt-0.5">Always full batch size</div>
       </div>
     </div>
 
-    <!-- Live Round Deck Visualizer -->
-    <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-4 md:p-5 space-y-3">
+    <!-- Live Dual-Round Deck Visualizer (Shows Straddle Hand-off) -->
+    <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-4 md:p-5 space-y-4">
       <div class="flex items-center justify-between border-b border-slate-800 pb-2.5">
         <div class="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
-          <span>Active Round Permutation Deck (Fisher-Yates with Seed(Round))</span>
+          <span>Active Round Shuffled Decks &amp; Today's Selection</span>
         </div>
         <div class="flex items-center gap-3 text-[11px]">
-          <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-sm bg-indigo-500 inline-block"></span> Selected Today</span>
-          <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-sm bg-slate-800 inline-block border border-slate-700"></span> Other items in Round</span>
+          <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-sm bg-indigo-500 inline-block"></span> Part 1 (Round R)</span>
+          <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-sm bg-cyan-400 inline-block"></span> Part 2 (Round R+1 Straddle)</span>
+          <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-sm bg-slate-800 inline-block border border-slate-700"></span> Unselected in round</span>
         </div>
       </div>
 
-      <!-- Shuffled Cards Grid -->
-      <div id="cardsGrid" class="flex flex-wrap gap-1.5 p-3.5 bg-slate-950 rounded-lg border border-slate-800/80 max-h-56 overflow-y-auto custom-scrollbar">
+      <!-- Container for Round Decks -->
+      <div id="decksContainer" class="space-y-3">
         <!-- Rendered via JS -->
       </div>
       <div id="deckSummary" class="text-xs text-slate-400 font-mono"></div>
@@ -188,10 +189,10 @@
     <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-4 md:p-5 space-y-3">
       <div class="flex items-center justify-between border-b border-slate-800 pb-2.5">
         <div class="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-          Multi-Day Schedule (Shows Reshuffle on Round Boundaries)
+          Multi-Day Seamless Straddle Timeline (Always Full Batch K)
         </div>
         <div class="text-[11px] text-slate-400 font-mono">
-          daysPerRound = ceil(N / K) = <span id="daysPerRoundVal" class="text-indigo-400 font-bold">2</span>
+          globalOffset = (D-1) * K = <span id="globalOffsetVal" class="text-indigo-400 font-bold">0</span>
         </div>
       </div>
 
@@ -200,28 +201,27 @@
       </div>
     </div>
 
-    <!-- Comparison: Old Strategy vs New Strategy -->
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-      <div class="p-4 bg-slate-900/60 border border-rose-900/40 rounded-xl">
-        <div class="text-xs font-bold text-rose-400 mb-1.5 flex items-center gap-1.5">
-          <span>✕ Old Strategy (Static ORDER BY id ASC)</span>
-        </div>
-        <ul class="text-[11px] text-slate-400 space-y-1.5 list-disc list-inside">
-          <li>ID order was frozen permanently (`0 .. N-1`).</li>
-          <li>After round 1 finished, round 2 returned the exact same photos in the exact same sequence.</li>
-          <li>Under-fill ($N \le K$) repeated the same identical list every single day.</li>
-        </ul>
+    <!-- Strategy Summary Cards -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div class="p-4 bg-slate-900/60 border border-slate-800 rounded-xl">
+        <div class="text-xs font-bold text-indigo-400 mb-1.5">1. Infinite Virtual Tape</div>
+        <p class="text-[11px] text-slate-400 leading-relaxed">
+          Rounds concatenate seamlessly: Round 0 (shuffled with Seed 0) + Round 1 (shuffled with Seed 1) + Round 2 (shuffled with Seed 2). The window steps by exactly $K$ items daily.
+        </p>
       </div>
 
-      <div class="p-4 bg-slate-900/60 border border-emerald-900/40 rounded-xl">
-        <div class="text-xs font-bold text-emerald-400 mb-1.5 flex items-center gap-1.5">
-          <span>✓ New Strategy (Multi-Round Reshuffled Permutation)</span>
-        </div>
-        <ul class="text-[11px] text-slate-400 space-y-1.5 list-disc list-inside">
-          <li><strong>Zero duplicates within each round</strong> across consecutive days.</li>
-          <li><strong>Fresh random order every round</strong>: whole deck is reshuffled with seed = hash(Year, Window, Round).</li>
-          <li><strong>Clean tail flush</strong>: finishes previous round cleanly without mixing, then starts fresh.</li>
-        </ul>
+      <div class="p-4 bg-slate-900/60 border border-cyan-800/40 rounded-xl">
+        <div class="text-xs font-bold text-cyan-300 mb-1.5">2. Seamless Straddle Stitch</div>
+        <p class="text-[11px] text-slate-400 leading-relaxed">
+          When a round ends mid-day, the frame takes the remaining items of Round $R$ (exhausting it cleanly) and fills the rest from Round $R+1$'s fresh shuffle. <strong>Zero missing photos</strong>.
+        </p>
+      </div>
+
+      <div class="p-4 bg-slate-900/60 border border-emerald-800/40 rounded-xl">
+        <div class="text-xs font-bold text-emerald-400 mb-1.5">3. Fresh Order Every Round</div>
+        <p class="text-[11px] text-slate-400 leading-relaxed">
+          No repetition within any round. When entering Round $R+1$, photos are in an entirely new random sequence. Same-day duplicates during a straddle are automatically prevented.
+        </p>
       </div>
     </div>
 
@@ -283,7 +283,7 @@
           day = (day % 15) + 1;
           dSlider.value = day;
           update();
-        }, 1300);
+        }, 1400);
       }
     }
 
@@ -297,7 +297,6 @@
       }
     }
 
-    // Simple string hash
     function hashString(str) {
       let hash = 2166136261;
       for (let i = 0; i < str.length; i++) {
@@ -308,7 +307,6 @@
     }
 
     function getRoundDeck(totalN, roundNum, year) {
-      // Deterministic Fisher-Yates shuffle of [0..N-1]
       const seedStr = `${year}:anniversary:${roundNum}`;
       const seedVal = hashString(seedStr);
       const rand = mulberry32(seedVal);
@@ -323,92 +321,196 @@
       return { deck, seedStr, seedVal };
     }
 
+    function calculateStraddleSlice(totalN, sizeK, dayNum, year) {
+      if (totalN <= sizeK) {
+        const { deck, seedStr, seedVal } = getRoundDeck(totalN, dayNum - 1, year);
+        return {
+          type: 'underfill',
+          round1: dayNum - 1,
+          round2: null,
+          part1: deck.map((id, idx) => ({ id, slot: idx, round: dayNum - 1 })),
+          part2: [],
+          totalDelivered: totalN,
+          seedStr1: seedStr,
+          seedStr2: ''
+        };
+      }
+
+      const globalStart = (dayNum - 1) * sizeK;
+      const round1 = Math.floor(globalStart / totalN);
+      const offset1 = globalStart % totalN;
+
+      const { deck: deck1, seedStr: seedStr1 } = getRoundDeck(totalN, round1, year);
+
+      if (offset1 + sizeK <= totalN) {
+        // Entirely within round1
+        const part1 = [];
+        for (let i = 0; i < sizeK; i++) {
+          part1.push({ id: deck1[offset1 + i], slot: offset1 + i, round: round1 });
+        }
+        return {
+          type: 'single',
+          round1: round1,
+          round2: null,
+          part1: part1,
+          part2: [],
+          totalDelivered: sizeK,
+          seedStr1: seedStr1,
+          seedStr2: ''
+        };
+      }
+
+      // Straddles round1 and round2
+      const round2 = round1 + 1;
+      const { deck: deck2, seedStr: seedStr2 } = getRoundDeck(totalN, round2, year);
+
+      const firstCount = totalN - offset1;
+      const part1 = [];
+      const seen = new Set();
+      for (let i = 0; i < firstCount; i++) {
+        const id = deck1[offset1 + i];
+        part1.push({ id: id, slot: offset1 + i, round: round1 });
+        seen.add(id);
+      }
+
+      const secondCountNeeded = sizeK - firstCount;
+      const part2 = [];
+      let deck2Idx = 0;
+      while (part2.length < secondCountNeeded && deck2Idx < totalN) {
+        const id = deck2[deck2Idx];
+        if (!seen.has(id)) {
+          part2.push({ id: id, slot: deck2Idx, round: round2 });
+          seen.add(id);
+        }
+        deck2Idx++;
+      }
+
+      return {
+        type: 'straddle',
+        round1: round1,
+        round2: round2,
+        part1: part1,
+        part2: part2,
+        totalDelivered: part1.length + part2.length,
+        seedStr1: seedStr1,
+        seedStr2: seedStr2
+      };
+    }
+
     function update() {
       nVal.innerText = n;
       kVal.innerText = k;
       dVal.innerText = `Day ${day}`;
+      document.getElementById('globalOffsetVal').innerText = (day - 1) * k;
 
-      const daysPerRound = Math.max(1, Math.ceil(n / k));
-      document.getElementById('daysPerRoundVal').innerText = daysPerRound;
-
-      const round = Math.floor((day - 1) / daysPerRound);
-      const dayInRound = (day - 1) % daysPerRound;
-      const sliceStart = dayInRound * k;
-      const sliceEnd = Math.min(sliceStart + k, n);
-      const isTailFlush = (sliceEnd === n && (sliceEnd - sliceStart) < k);
-
-      const { deck, seedStr, seedVal } = getRoundDeck(n, round, currentYear);
+      const sliceInfo = calculateStraddleSlice(n, k, day, currentYear);
 
       // 1. Update Status Banner
       const roundBadge = document.getElementById('roundBadge');
-      const dayInRoundText = document.getElementById('dayInRoundText');
+      const straddleStatusText = document.getElementById('straddleStatusText');
       const seedText = document.getElementById('seedText');
       const sliceRangeText = document.getElementById('sliceRangeText');
       const sliceTypeDesc = document.getElementById('sliceTypeDesc');
 
-      roundBadge.innerText = `Round ${round}`;
-      dayInRoundText.innerText = `Day ${dayInRound + 1} of ${daysPerRound} in this round`;
-      seedText.innerText = `Seed: hash(${seedStr}) = 0x${seedVal.toString(16).padStart(8, '0')}`;
-      sliceRangeText.innerText = `Items [${sliceStart} .. ${sliceEnd - 1}] (${sliceEnd - sliceStart} photos)`;
-
-      if (isTailFlush) {
-        sliceTypeDesc.innerText = `Tail Flush (remaining ${sliceEnd - sliceStart} items exhaust this round)`;
-      } else if (daysPerRound === 1) {
-        sliceTypeDesc.innerText = `Under-Fill Mode: all ${n} photos in Round ${round}'s unique shuffle`;
+      if (sliceInfo.type === 'underfill') {
+        roundBadge.innerText = `Day ${day}`;
+        straddleStatusText.innerText = `Under-Fill Mode (N ≤ K)`;
+        seedText.innerText = `Seed: hash(${sliceInfo.seedStr1})`;
+        sliceRangeText.innerText = `All ${sliceInfo.totalDelivered} photos delivered`;
+        sliceTypeDesc.innerText = `Fresh daily random order of all ${n} photos`;
+      } else if (sliceInfo.type === 'single') {
+        roundBadge.innerText = `Round ${sliceInfo.round1}`;
+        straddleStatusText.innerText = `Single Round Slice (Round ${sliceInfo.round1})`;
+        seedText.innerText = `Seed: hash(${sliceInfo.seedStr1})`;
+        sliceRangeText.innerText = `Exactly ${sliceInfo.totalDelivered} photos delivered`;
+        sliceTypeDesc.innerText = `Slots [${sliceInfo.part1[0].slot} .. ${sliceInfo.part1[sliceInfo.part1.length-1].slot}] from Round ${sliceInfo.round1}`;
       } else {
-        sliceTypeDesc.innerText = `Disjoint slice ${dayInRound + 1} of ${daysPerRound} in Round ${round}`;
+        roundBadge.innerText = `Straddle R${sliceInfo.round1} ➜ R${sliceInfo.round2}`;
+        straddleStatusText.innerText = `Seamless Straddle Stitch: Round ${sliceInfo.round1} + Round ${sliceInfo.round2}`;
+        seedText.innerText = `R${sliceInfo.round1} (${sliceInfo.part1.length} items) + R${sliceInfo.round2} (${sliceInfo.part2.length} items)`;
+        sliceRangeText.innerText = `Exactly ${sliceInfo.totalDelivered} / ${k} photos delivered!`;
+        sliceTypeDesc.innerText = `Exhausts Round ${sliceInfo.round1}, seamlessly enters freshly-shuffled Round ${sliceInfo.round2}`;
       }
 
-      // 2. Render Cards Grid for Active Round
-      const cardsGrid = document.getElementById('cardsGrid');
-      cardsGrid.innerHTML = '';
+      // 2. Render Active Decks (Round 1 + Round 2 if straddle)
+      renderDecks(sliceInfo);
 
-      const maxRender = Math.min(n, 120);
-      const selectedIndices = new Set();
-      for (let idx = sliceStart; idx < sliceEnd; idx++) {
-        selectedIndices.add(idx);
-      }
-
-      for (let pos = 0; pos < maxRender; pos++) {
-        const photoId = deck[pos];
-        const isSelected = selectedIndices.has(pos);
-
-        const card = document.createElement('div');
-        card.className = 'w-7 h-7 rounded text-[10px] font-mono flex flex-col items-center justify-center font-bold cursor-default transition-all ';
-
-        if (isSelected) {
-          card.className += isTailFlush ? 'bg-cyan-500 text-slate-950 ring-2 ring-cyan-300' : 'bg-indigo-500 text-white ring-2 ring-indigo-300 shadow-lg shadow-indigo-500/20';
-        } else {
-          card.className += 'bg-slate-800 text-slate-400 border border-slate-700/60 opacity-60';
-        }
-        card.innerText = `#${photoId + 1}`;
-        card.title = `Slot ${pos}: Photo #${photoId + 1} (${isSelected ? 'Selected Today' : 'Unseen in this round'})`;
-        cardsGrid.appendChild(card);
-      }
-
-      const deckSummary = document.getElementById('deckSummary');
-      deckSummary.innerHTML = `Round ${round} deck contains all <b>${n} photos</b> in freshly shuffled positions. Today shows slots <b>[${sliceStart} .. ${sliceEnd - 1}]</b> (${sliceEnd - sliceStart} photos).`;
-
-      // 3. Render Multi-Day Timeline
-      renderTimeline(daysPerRound);
+      // 3. Render Timeline
+      renderTimeline();
     }
 
-    function renderTimeline(daysPerRound) {
+    function renderDecks(sliceInfo) {
+      const container = document.getElementById('decksContainer');
+      container.innerHTML = '';
+
+      // Render Round 1
+      const { deck: deck1 } = getRoundDeck(n, sliceInfo.round1, currentYear);
+      container.appendChild(createDeckView(`Round ${sliceInfo.round1} Deck (Seed: hash(${sliceInfo.seedStr1}))`, deck1, sliceInfo.part1, 'bg-indigo-500 text-white ring-2 ring-indigo-300'));
+
+      // If straddle, render Round 2
+      if (sliceInfo.type === 'straddle') {
+        const { deck: deck2 } = getRoundDeck(n, sliceInfo.round2, currentYear);
+        container.appendChild(createDeckView(`Round ${sliceInfo.round2} Deck (Freshly Shuffled with Seed: hash(${sliceInfo.seedStr2}))`, deck2, sliceInfo.part2, 'bg-cyan-400 text-slate-950 font-bold ring-2 ring-cyan-200'));
+      }
+
+      const summary = document.getElementById('deckSummary');
+      if (sliceInfo.type === 'straddle') {
+        summary.innerHTML = `<span class="text-cyan-400 font-bold">Straddle Stitch Active:</span> Delivered ${sliceInfo.part1.length} photos from Round ${sliceInfo.round1} (finishing it) + ${sliceInfo.part2.length} photos from Round ${sliceInfo.round2} (starting it). Total = <b>${sliceInfo.totalDelivered} unique photos</b>.`;
+      } else if (sliceInfo.type === 'single') {
+        summary.innerHTML = `<span class="text-indigo-400 font-bold">Single-Round Delivery:</span> All ${sliceInfo.totalDelivered} photos served from Round ${sliceInfo.round1} slots [${sliceInfo.part1[0].slot} .. ${sliceInfo.part1[sliceInfo.part1.length-1].slot}].`;
+      } else {
+        summary.innerHTML = `<span class="text-amber-400 font-bold">Under-Fill Delivery:</span> All ${n} available photos served in Day ${day}'s unique shuffle.`;
+      }
+    }
+
+    function createDeckView(title, deck, selectedParts, highlightClass) {
+      const wrap = document.createElement('div');
+      wrap.className = 'p-3 bg-slate-950/70 rounded-lg border border-slate-800 space-y-2';
+
+      const header = document.createElement('div');
+      header.className = 'text-xs font-mono text-slate-300 flex items-center justify-between';
+      header.innerHTML = `<span>${title}</span><span class="text-[11px] text-slate-400 font-normal">${selectedParts.length} selected from this deck</span>`;
+      wrap.appendChild(header);
+
+      const grid = document.createElement('div');
+      grid.className = 'flex flex-wrap gap-1.5 max-h-36 overflow-y-auto custom-scrollbar p-1.5 bg-slate-900/60 rounded';
+
+      const selSlots = new Map();
+      selectedParts.forEach(p => selSlots.set(p.slot, p.id));
+
+      const maxItems = Math.min(deck.length, 120);
+      for (let s = 0; s < maxItems; s++) {
+        const photoId = deck[s];
+        const isSel = selSlots.has(s);
+
+        const card = document.createElement('div');
+        card.className = 'w-7 h-7 rounded text-[10px] font-mono flex items-center justify-center font-bold cursor-default transition-all ';
+
+        if (isSel) {
+          card.className += highlightClass;
+        } else {
+          card.className += 'bg-slate-800 text-slate-500 border border-slate-700/50 opacity-50';
+        }
+        card.innerText = `#${photoId + 1}`;
+        card.title = `Slot ${s}: Photo #${photoId + 1}`;
+        grid.appendChild(card);
+      }
+
+      wrap.appendChild(grid);
+      return wrap;
+    }
+
+    function renderTimeline() {
       const timeline = document.getElementById('roundTimeline');
       timeline.innerHTML = '';
 
       const startDay = Math.max(1, day - 1);
-      const totalDaysToShow = 5;
+      const daysCount = 5;
 
-      for (let i = 0; i < totalDaysToShow; i++) {
+      for (let i = 0; i < daysCount; i++) {
         const d = startDay + i;
-        const r = Math.floor((d - 1) / daysPerRound);
-        const dir = (d - 1) % daysPerRound;
-        const sStart = dir * k;
-        const sEnd = Math.min(sStart + k, n);
-        const count = sEnd - sStart;
+        const info = calculateStraddleSlice(n, k, d, currentYear);
         const isCurrentDay = (d === day);
-        const isRoundStart = (dir === 0);
 
         const row = document.createElement('div');
         row.className = `flex items-center gap-3 p-2.5 rounded-lg border transition-all ${
@@ -417,46 +519,56 @@
             : 'bg-slate-950/60 border-slate-800/80 opacity-80'
         }`;
 
-        // Day and Round Label
         const badgeCol = document.createElement('div');
         badgeCol.className = 'w-24';
         badgeCol.innerHTML = `
           <div class="font-mono text-xs font-bold ${isCurrentDay ? 'text-amber-400' : 'text-slate-300'}">
             Day ${d} ${isCurrentDay ? '📍' : ''}
           </div>
-          <div class="text-[10px] font-mono text-indigo-400">Round ${r} (Day ${dir + 1})</div>
+          <div class="text-[10px] font-mono text-indigo-400">${info.type === 'straddle' ? `R${info.round1}+R${info.round2}` : `Round ${info.round1}`}</div>
         `;
 
         // Bar visualization
         const barWrap = document.createElement('div');
-        barWrap.className = 'flex-1 h-6 bg-slate-900 rounded overflow-hidden relative border border-slate-800';
+        barWrap.className = 'flex-1 h-6 bg-slate-900 rounded overflow-hidden relative border border-slate-800 flex';
 
-        const pLeft = (sStart / n) * 100;
-        const pWidth = (count / n) * 100;
-
-        const sliceBar = document.createElement('div');
-        const colorClass = isCurrentDay 
-          ? (count < k ? 'bg-cyan-400 text-slate-950' : 'bg-indigo-500 text-white') 
-          : 'bg-slate-700 text-slate-300';
-        sliceBar.className = `absolute top-0 bottom-0 ${colorClass} font-mono text-[10px] font-bold flex items-center justify-center overflow-hidden px-1`;
-        sliceBar.style.left = `${pLeft}%`;
-        sliceBar.style.width = `${pWidth}%`;
-        sliceBar.innerText = `${count} photos [${sStart}..${sEnd - 1}]`;
-
-        barWrap.appendChild(sliceBar);
-
-        // Right details
-        const infoCol = document.createElement('div');
-        infoCol.className = 'w-36 text-right font-mono text-xs';
-        if (isRoundStart) {
-          infoCol.innerHTML = `<span class="px-1.5 py-0.5 rounded text-[10px] bg-emerald-900/60 text-emerald-300 border border-emerald-700/60">🎉 Fresh Shuffle</span>`;
+        if (info.type === 'underfill') {
+          const b = document.createElement('div');
+          b.className = 'h-full bg-amber-500/80 text-[10px] text-white flex items-center px-2 font-mono';
+          b.style.width = '100%';
+          b.innerText = `All ${info.totalDelivered} photos`;
+          barWrap.appendChild(b);
+        } else if (info.type === 'single') {
+          const b = document.createElement('div');
+          b.className = `h-full ${isCurrentDay ? 'bg-indigo-500 text-white' : 'bg-slate-700 text-slate-300'} text-[10px] flex items-center justify-center font-mono font-bold`;
+          b.style.width = '100%';
+          b.innerText = `${info.totalDelivered} photos (Round ${info.round1})`;
+          barWrap.appendChild(b);
         } else {
-          infoCol.innerHTML = `<span class="text-slate-400">Disjoint Slice</span>`;
+          // Straddle: 2 segments
+          const p1Pct = (info.part1.length / info.totalDelivered) * 100;
+          const p2Pct = (info.part2.length / info.totalDelivered) * 100;
+
+          const b1 = document.createElement('div');
+          b1.className = 'h-full bg-indigo-500 text-white text-[10px] flex items-center justify-center font-mono font-bold overflow-hidden';
+          b1.style.width = `${p1Pct}%`;
+          b1.innerText = `${info.part1.length} from R${info.round1}`;
+          barWrap.appendChild(b1);
+
+          const b2 = document.createElement('div');
+          b2.className = 'h-full bg-cyan-400 text-slate-950 text-[10px] flex items-center justify-center font-mono font-bold overflow-hidden border-l border-slate-900';
+          b2.style.width = `${p2Pct}%`;
+          b2.innerText = `${info.part2.length} from R${info.round2}`;
+          barWrap.appendChild(b2);
         }
+
+        const statsCol = document.createElement('div');
+        statsCol.className = 'w-36 text-right font-mono text-xs';
+        statsCol.innerHTML = `<span class="text-emerald-400 font-bold">${info.totalDelivered} photos</span>`;
 
         row.appendChild(badgeCol);
         row.appendChild(barWrap);
-        row.appendChild(infoCol);
+        row.appendChild(statsCol);
         timeline.appendChild(row);
       }
     }
