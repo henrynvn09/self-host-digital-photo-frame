@@ -117,9 +117,10 @@ run_daemon() {
 }
 
 case "${1:-daemon}" in
-	daemon)  run_daemon ;;
-	browser) display_power on; launch_browser ;;
-	on)      display_power on ;;
-	off)     stop_children ;;
-	*)       echo "Usage: $0 {daemon|browser|on|off}" >&2; exit 1 ;;
+	daemon)   run_daemon ;;
+	browser)  display_power on; launch_browser ;;
+	pir-test) PIR_DEBUG=true exec python3 "${SCRIPT_DIR}/pir.py" --test ;;
+	on)       display_power on ;;
+	off)      stop_children ;;
+	*)        echo "Usage: $0 {daemon|browser|pir-test|on|off}" >&2; exit 1 ;;
 esac

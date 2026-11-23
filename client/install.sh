@@ -16,7 +16,8 @@ fi
 
 echo "1/4 Installing WebKitGTK, X11 DPMS (xset), and GPIO packages..."
 sudo apt-get update -qq
-sudo apt-get install -y python3-gi gir1.2-webkit2-4.1 gir1.2-gtk-3.0 x11-xserver-utils python3-gpiozero
+sudo apt-get install -y python3-gi gir1.2-webkit2-4.1 gir1.2-gtk-3.0 x11-xserver-utils python3-gpiozero python3-lgpio
+sudo usermod -a -G gpio "${USER}" 2>/dev/null || true
 
 echo "2/4 Ensuring config.conf exists..."
 if [[ ! -f "${SCRIPT_DIR}/config.conf" ]]; then
