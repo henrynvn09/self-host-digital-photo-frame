@@ -4,6 +4,7 @@ const http = require("node:http");
 const https = require("node:https");
 
 const DEFAULT_TIMEOUT_MS = 15000;
+const DEFAULT_STREAM_TIMEOUT_MS = 65000;
 const SAFE_ASSET_ID_RE = /^[A-Za-z0-9._-]+$/;
 const PASS_THROUGH_HEADERS = [
 	"content-type",
@@ -13,7 +14,21 @@ const PASS_THROUGH_HEADERS = [
 	"last-modified"
 ];
 
-function pipeUpstreamAsset(req, res, source, upstreamSubpath, logger) {
+function extractRequestQuery(req) {
+	if (req && req.query && typeof req.query === "object") {
+		return req.query;
+	}
+	if (req && typeof req.url === "string") {
+		try {
+			return Object.fromEntries(new URL(req.url, "http://127.0.0.1").searchParams.entries());
+		} catch (_err) {
+			return {};
+		}
+	}
+	return {};
+}
+
+function pipeUpstreamAsset(req, res, source, upstreamSubpath, logger, { isStream = false } = {}) {
 	const assetId = req.params && req.params.id ? String(req.params.id) : "";
 	if (!assetId || !SAFE_ASSET_ID_RE.test(assetId)) {
 		res.statusCode = 400;
@@ -36,14 +51,28 @@ function pipeUpstreamAsset(req, res, source, upstreamSubpath, logger) {
 		return;
 	}
 
+	if (isStream) {
+		const query = extractRequestQuery(req);
+		if (query.window !== undefined && String(query.window).trim() !== "") {
+			target.searchParams.set("window", String(query.window).trim());
+		}
+		if (query.fps !== undefined && String(query.fps).trim() !== "") {
+			target.searchParams.set("fps", String(query.fps).trim());
+		}
+	}
+
 	const transport = target.protocol === "https:" ? https : http;
 	const headers = {};
 	if (source.apiKey) {
 		headers["x-api-key"] = source.apiKey;
 	}
-	if (req.headers && req.headers["if-none-match"]) {
+	if (!isStream && req.headers && req.headers["if-none-match"]) {
 		headers["if-none-match"] = req.headers["if-none-match"];
 	}
+
+	const requestTimeout = isStream
+		? Math.max(source.timeout || DEFAULT_TIMEOUT_MS, DEFAULT_STREAM_TIMEOUT_MS)
+		: (source.timeout || DEFAULT_TIMEOUT_MS);
 
 	let upstreamResRef = null;
 	let finished = false;
@@ -53,7 +82,7 @@ function pipeUpstreamAsset(req, res, source, upstreamSubpath, logger) {
 		{
 			method: "GET",
 			headers,
-			timeout: source.timeout || DEFAULT_TIMEOUT_MS
+			timeout: requestTimeout
 		},
 		(upstreamRes) => {
 			upstreamResRef = upstreamRes;
@@ -64,18 +93,50 @@ function pipeUpstreamAsset(req, res, source, upstreamSubpath, logger) {
 					res.setHeader(headerName, val);
 				}
 			}
+			if (isStream) {
+				res.setHeader("cache-control", "no-store");
+				res.setHeader("x-accel-buffering", "no");
+				if (res.socket && typeof res.socket.setNoDelay === "function") {
+					res.socket.setNoDelay(true);
+				}
+			}
 			if (typeof res.flushHeaders === "function") {
 				res.flushHeaders();
 			}
+
 			upstreamRes.on("end", () => {
 				finished = true;
+				if (isStream && !res.writableEnded) {
+					res.end();
+				}
 			});
 			upstreamRes.on("error", () => {
 				if (!res.destroyed) {
 					res.destroy();
 				}
 			});
-			upstreamRes.pipe(res);
+
+			if (isStream) {
+				res.on("drain", () => {
+					if (!upstreamRes.destroyed) {
+						upstreamRes.resume();
+					}
+				});
+				upstreamRes.on("data", (chunk) => {
+					if (res.destroyed || res.writableEnded) {
+						return;
+					}
+					const canContinue = res.write(chunk);
+					if (typeof res.flush === "function") {
+						res.flush();
+					}
+					if (!canContinue && !upstreamRes.destroyed) {
+						upstreamRes.pause();
+					}
+				});
+			} else {
+				upstreamRes.pipe(res);
+			}
 		}
 	);
 
@@ -136,6 +197,9 @@ function registerMediaRoutes(expressApp, resolveSource, logger = null) {
 	});
 	expressApp.get("/mediabackground/backdrop/:id", (req, res) => {
 		pipeUpstreamAsset(req, res, resolveSource(req), "backdrop", logger);
+	});
+	expressApp.get("/mediabackground/stream/:id", (req, res) => {
+		pipeUpstreamAsset(req, res, resolveSource(req), "stream", logger, { isStream: true });
 	});
 }
 

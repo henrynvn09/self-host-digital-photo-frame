@@ -46,7 +46,68 @@ function formatGeoLine(exifInfo) {
 		.join(", ");
 }
 
-function computeOverlayModel(payload) {
+function formatClockDuration(seconds) {
+	const total = Math.max(0, Math.round(seconds));
+	const pad2 = (n) => String(n).padStart(2, "0");
+	if (total >= 3600) {
+		const hours = Math.floor(total / 3600);
+		const mins = Math.floor((total % 3600) / 60);
+		const secs = total % 60;
+		return `${hours}:${pad2(mins)}:${pad2(secs)}`;
+	}
+	const mins = Math.floor(total / 60);
+	const secs = total % 60;
+	return `${mins}:${pad2(secs)}`;
+}
+
+function resolvePayloadWindowSeconds(payload, config) {
+	const explicit = Number(payload.playbackWindowSeconds ?? payload.windowSeconds);
+	if (Number.isFinite(explicit) && explicit > 0) {
+		return Number(explicit.toFixed(3));
+	}
+	const cfg = config || {};
+	const maxSec = Number(cfg.maxVideoDurationSeconds);
+	if (cfg.maxVideoDurationSeconds != null && cfg.maxVideoDurationSeconds !== "" && Number.isFinite(maxSec) && maxSec > 0) {
+		return Number(maxSec.toFixed(3));
+	}
+	const videoSpeedMs = Number(cfg.videoSlideshowSpeed);
+	if (cfg.videoSlideshowSpeed != null && cfg.videoSlideshowSpeed !== "" && Number.isFinite(videoSpeedMs) && videoSpeedMs > 0) {
+		return Number((videoSpeedMs / 1000).toFixed(3));
+	}
+	const slideSpeedMs = Number(cfg.slideshowSpeed);
+	if (Number.isFinite(slideSpeedMs) && slideSpeedMs > 0) {
+		return Number((slideSpeedMs / 1000).toFixed(3));
+	}
+	return 12;
+}
+
+function formatVideoBadge(durationSeconds, windowSeconds) {
+	const durNum = Number(durationSeconds);
+	const winNum = Number(windowSeconds);
+	const roundedWin = Number.isFinite(winNum) && winNum > 0 ? Math.max(1, Math.round(winNum)) : 0;
+	const roundedDur = Number.isFinite(durNum) && durNum > 0 ? Math.max(1, Math.round(durNum)) : 0;
+
+	if (roundedDur <= 0) {
+		return roundedWin > 0 ? `🎥 ${formatClockDuration(roundedWin)}` : "🎥";
+	}
+	if (roundedWin > 0 && durNum > winNum && roundedDur > roundedWin) {
+		return `🎥 ${formatClockDuration(roundedWin)} / ${formatClockDuration(roundedDur)}`;
+	}
+	return `🎥 ${formatClockDuration(roundedDur)}`;
+}
+
+function buildVideoStreamUrl(payload, config, nonce) {
+	const windowSec = resolvePayloadWindowSeconds(payload, config);
+	const rawFps = Number(payload.videoFps ?? (config && config.videoFps) ?? 30);
+	const fps = Number.isFinite(rawFps) && rawFps > 0 ? Math.min(30, Math.max(1, Math.trunc(rawFps))) : 30;
+	let url = `/mediabackground/stream/${encodeURIComponent(payload.assetId)}?window=${encodeURIComponent(String(windowSec))}&fps=${encodeURIComponent(String(fps))}&t=${encodeURIComponent(String(nonce))}`;
+	if (Number.isInteger(payload.sourceIndex)) {
+		url += `&source=${payload.sourceIndex}`;
+	}
+	return url;
+}
+
+function computeOverlayModel(payload, config) {
 	const fields = Array.isArray(payload.infoFields) && payload.infoFields.length > 0
 		? payload.infoFields
 		: ["date", "geo", "count", "album"];
@@ -74,6 +135,14 @@ function computeOverlayModel(payload) {
 		}
 	}
 
+	if (String(payload.type || "").toUpperCase() === "VIDEO") {
+		const windowSec = resolvePayloadWindowSeconds(payload, config);
+		const badge = formatVideoBadge(payload.durationSeconds, windowSec);
+		if (badge) {
+			bodyLines.push(badge);
+		}
+	}
+
 	return { headerLines, bodyLines };
 }
 
@@ -82,6 +151,10 @@ const mediaBackgroundDefinition = {
 
 	defaults: {
 		slideshowSpeed: 12000,
+		videoSlideshowSpeed: null,
+		maxVideoDurationSeconds: null,
+		videoFps: 30,
+		videoMuted: true,
 		transitionSpeed: "1.2s",
 		backgroundSize: "contain",
 		backgroundPosition: "center",
@@ -112,6 +185,7 @@ const mediaBackgroundDefinition = {
 		this.stageEl = null;
 		this.infoEl = null;
 		this.slotTimers = new Map();
+		this.streamNonce = 0;
 		this.initializedBackend = false;
 	},
 
@@ -195,7 +269,7 @@ const mediaBackgroundDefinition = {
 		}
 
 		const doc = this.getDoc();
-		const { headerLines, bodyLines } = computeOverlayModel(payload);
+		const { headerLines, bodyLines } = computeOverlayModel(payload, this.config);
 		this.infoEl.textContent = "";
 
 		if (headerLines.length === 0 && bodyLines.length === 0) {
@@ -241,6 +315,7 @@ const mediaBackgroundDefinition = {
 		const showBackdrop = payload.showBlurredBackdrop !== false;
 		const backgroundSize = payload.backgroundSize || "contain";
 		const backgroundPosition = payload.backgroundPosition || "center";
+		const isVideo = String(payload.type || "").toUpperCase() === "VIDEO";
 
 		const slide = doc.createElement("div");
 		slide.className = "mmmb-slide";
@@ -313,7 +388,13 @@ const mediaBackgroundDefinition = {
 		};
 
 		this.stageEl.appendChild(slide);
-		img.src = payload.previewUrl;
+		if (isVideo) {
+			this.streamNonce = (this.streamNonce || 0) + 1;
+			const nonce = `${Date.now()}-${this.streamNonce}`;
+			img.src = payload.streamUrl || buildVideoStreamUrl(payload, this.config, nonce);
+		} else {
+			img.src = payload.previewUrl;
+		}
 	},
 
 	suspend() {

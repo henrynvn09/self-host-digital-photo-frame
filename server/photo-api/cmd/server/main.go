@@ -50,6 +50,9 @@ func main() {
 		"cache_mode", cfg.CacheMode,
 		"cache_max_mb", cfg.CacheMaxMB,
 		"max_concurrent_decodes", cfg.MaxConcurrentDecodes,
+		"video_max_resolution", fmt.Sprintf("%dx%d", cfg.VideoMaxWidth, cfg.VideoMaxHeight),
+		"video_fps", cfg.VideoFPS,
+		"max_concurrent_video_transcodes", cfg.MaxConcurrentVideoTranscode,
 		"scan_interval", cfg.ScanInterval.String(),
 		"auth_enabled", cfg.APIKey != "",
 		"uid", os.Getuid(),
@@ -69,15 +72,19 @@ func main() {
 	defer st.Close()
 
 	cache, err := preview.NewCache(cfg.DataDir, preview.Options{
-		Mode:                 cfg.CacheMode,
-		MaxWidth:             cfg.MaxWidth,
-		MaxHeight:            cfg.MaxHeight,
-		JPEGQuality:          cfg.JPEGQuality,
-		MaxMB:                cfg.CacheMaxMB,
-		PrebakeBlur:          cfg.PrebakeBlur,
-		FrameWidth:           cfg.FrameWidth,
-		FrameHeight:          cfg.FrameHeight,
-		MaxConcurrentDecodes: cfg.MaxConcurrentDecodes,
+		Mode:                        cfg.CacheMode,
+		MaxWidth:                    cfg.MaxWidth,
+		MaxHeight:                   cfg.MaxHeight,
+		JPEGQuality:                 cfg.JPEGQuality,
+		MaxMB:                       cfg.CacheMaxMB,
+		PrebakeBlur:                 cfg.PrebakeBlur,
+		FrameWidth:                  cfg.FrameWidth,
+		FrameHeight:                 cfg.FrameHeight,
+		MaxConcurrentDecodes:        cfg.MaxConcurrentDecodes,
+		VideoMaxWidth:               cfg.VideoMaxWidth,
+		VideoMaxHeight:              cfg.VideoMaxHeight,
+		VideoFPS:                    cfg.VideoFPS,
+		MaxConcurrentVideoTranscode: cfg.MaxConcurrentVideoTranscode,
 	})
 	if err != nil {
 		slog.Error("init preview cache failed", "error", err)

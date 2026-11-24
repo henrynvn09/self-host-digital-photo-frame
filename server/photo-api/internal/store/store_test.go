@@ -2,12 +2,103 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
+	_ "modernc.org/sqlite"
+
 	"photo-api/internal/store"
 )
+
+func TestBackwardCompatibleVideoSchemaMigration(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "index.db")
+
+	// Simulate pre-#19 schema without media_type or duration_sec columns.
+	legacyDB, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatalf("open legacy sqlite: %v", err)
+	}
+	_, err = legacyDB.Exec(`
+CREATE TABLE assets (
+	id TEXT PRIMARY KEY,
+	rel_path TEXT NOT NULL UNIQUE,
+	mtime INTEGER NOT NULL,
+	size INTEGER NOT NULL,
+	taken_at TEXT NOT NULL,
+	taken_year INTEGER NOT NULL,
+	taken_month INTEGER NOT NULL,
+	taken_day INTEGER NOT NULL,
+	city TEXT NOT NULL DEFAULT '',
+	state TEXT NOT NULL DEFAULT '',
+	country TEXT NOT NULL DEFAULT '',
+	album TEXT NOT NULL DEFAULT '',
+	orientation INTEGER NOT NULL DEFAULT 1,
+	width INTEGER NOT NULL DEFAULT 0,
+	height INTEGER NOT NULL DEFAULT 0,
+	indexed_at TEXT NOT NULL
+);
+INSERT INTO assets (
+	id, rel_path, mtime, size, taken_at, taken_year, taken_month, taken_day,
+	city, state, country, album, orientation, width, height, indexed_at
+) VALUES (
+	'legacy-photo-1', '2020/Trip/legacy.jpg', 1700000000, 4096,
+	'2020-07-15T10:00:00Z', 2020, 7, 15,
+	'Saigon', '', 'Vietnam', 'Trip', 1, 1600, 1200, '2024-01-01T00:00:00Z'
+);`)
+	if err != nil {
+		_ = legacyDB.Close()
+		t.Fatalf("seed legacy table: %v", err)
+	}
+	_ = legacyDB.Close()
+
+	st, err := store.Open(dataDir)
+	if err != nil {
+		t.Fatalf("store.Open migration failed: %v", err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	legacyAsset, err := st.GetAsset(ctx, "legacy-photo-1")
+	if err != nil || legacyAsset == nil {
+		t.Fatalf("get legacy asset after migration: asset=%v err=%v", legacyAsset, err)
+	}
+	if legacyAsset.MediaType != "IMAGE" || legacyAsset.DurationSec != 0 {
+		t.Fatalf("expected migrated defaults MediaType=IMAGE DurationSec=0, got %+v", legacyAsset)
+	}
+
+	taken := time.Date(2023, 7, 15, 12, 0, 0, 0, time.UTC)
+	err = st.UpsertAsset(ctx, store.Asset{
+		ID:          "video-1",
+		RelPath:     "2023/Trip/clip.mp4",
+		MediaType:   "VIDEO",
+		DurationSec: 14.5,
+		Mtime:       taken.Unix(),
+		Size:        204800,
+		TakenAt:     taken,
+		TakenYear:   2023,
+		TakenMonth:  7,
+		TakenDay:    15,
+		Orientation: 1,
+		Width:       1080,
+		Height:      1920,
+		IndexedAt:   taken,
+	})
+	if err != nil {
+		t.Fatalf("upsert video asset: %v", err)
+	}
+
+	gotVideo, err := st.GetAsset(ctx, "video-1")
+	if err != nil || gotVideo == nil {
+		t.Fatalf("get video asset: asset=%v err=%v", gotVideo, err)
+	}
+	if gotVideo.MediaType != "VIDEO" || gotVideo.DurationSec != 14.5 {
+		t.Fatalf("expected VIDEO 14.5s, got MediaType=%q DurationSec=%v", gotVideo.MediaType, gotVideo.DurationSec)
+	}
+}
 
 func TestSearchRandomAtYear_IntraRoundDisjointAndReshuffle(t *testing.T) {
 	dataDir := t.TempDir()

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"image"
 	_ "image/jpeg"
@@ -12,7 +13,9 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -29,7 +32,7 @@ import (
 	"photo-api/internal/store"
 )
 
-var supportedExts = map[string]bool{
+var supportedImageExts = map[string]bool{
 	".jpg":  true,
 	".jpeg": true,
 	".png":  true,
@@ -37,6 +40,15 @@ var supportedExts = map[string]bool{
 	".heic": true,
 	".heif": true,
 }
+
+var supportedVideoExts = map[string]bool{
+	".mp4":  true,
+	".mov":  true,
+	".m4v":  true,
+	".webm": true,
+}
+
+const ffprobeTimeout = 15 * time.Second
 
 var (
 	reFilenameDate  = regexp.MustCompile(`(?:^|[^0-9])(19\d{2}|20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)(?:[^0-9]|$)`)
@@ -128,7 +140,9 @@ func (s *Scanner) Scan(ctx context.Context) (Stats, error) {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(name))
-		if !supportedExts[ext] {
+		isImg := supportedImageExts[ext]
+		isVid := supportedVideoExts[ext]
+		if !isImg && !isVid {
 			return nil
 		}
 
@@ -157,7 +171,12 @@ func (s *Scanner) Scan(ctx context.Context) (Stats, error) {
 			return nil
 		}
 
-		asset := buildAsset(path, relSlash, mtime, size, info.ModTime(), loadGeo)
+		var asset store.Asset
+		if isVid {
+			asset = buildVideoAsset(ctx, path, relSlash, mtime, size, info.ModTime())
+		} else {
+			asset = buildAsset(path, relSlash, mtime, size, info.ModTime(), loadGeo)
+		}
 		if err := s.store.UpsertAsset(ctx, asset); err != nil {
 			slog.Warn("upsert asset failed", "path", relSlash, "error", err)
 			stats.Errors++
@@ -251,6 +270,7 @@ func buildAsset(fullPath, relSlash string, mtime, size int64, modTime time.Time,
 	a := store.Asset{
 		ID:          DeterministicUUID(relSlash),
 		RelPath:     relSlash,
+		MediaType:   "IMAGE",
 		Mtime:       mtime,
 		Size:        size,
 		Album:       deriveAlbum(relSlash),
@@ -283,6 +303,130 @@ func buildAsset(fullPath, relSlash string, mtime, size int64, modTime time.Time,
 	}
 
 	a.TakenAt = resolveDate(exifDate, relSlash, modTime)
+	a.TakenYear = a.TakenAt.UTC().Year()
+	a.TakenMonth = int(a.TakenAt.UTC().Month())
+	a.TakenDay = a.TakenAt.UTC().Day()
+	return a
+}
+
+type ffprobeSideData struct {
+	SideDataType string   `json:"side_data_type"`
+	Rotation     *float64 `json:"rotation"`
+}
+
+type ffprobeStream struct {
+	CodecType    string            `json:"codec_type"`
+	Width        int               `json:"width"`
+	Height       int               `json:"height"`
+	Duration     string            `json:"duration"`
+	Tags         map[string]string `json:"tags"`
+	SideDataList []ffprobeSideData `json:"side_data_list"`
+}
+
+type ffprobeFormat struct {
+	Duration string            `json:"duration"`
+	Tags     map[string]string `json:"tags"`
+}
+
+type ffprobePayload struct {
+	Streams []ffprobeStream `json:"streams"`
+	Format  ffprobeFormat   `json:"format"`
+}
+
+type videoProbeMeta struct {
+	durationSec float64
+	width       int
+	height      int
+}
+
+func probeVideo(ctx context.Context, fullPath string) (videoProbeMeta, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, ffprobeTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(
+		probeCtx,
+		"ffprobe",
+		"-v", "quiet",
+		"-print_format", "json",
+		"-show_format",
+		"-show_streams",
+		fullPath,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return videoProbeMeta{}, fmt.Errorf("ffprobe %s: %w", fullPath, err)
+	}
+
+	var payload ffprobePayload
+	if err := json.Unmarshal(out, &payload); err != nil {
+		return videoProbeMeta{}, fmt.Errorf("decode ffprobe json: %w", err)
+	}
+
+	var meta videoProbeMeta
+	if d, err := strconv.ParseFloat(strings.TrimSpace(payload.Format.Duration), 64); err == nil && d > 0 && !math.IsNaN(d) && !math.IsInf(d, 0) {
+		meta.durationSec = d
+	}
+
+	for _, st := range payload.Streams {
+		if st.CodecType != "video" {
+			continue
+		}
+		w, h := st.Width, st.Height
+		if meta.durationSec <= 0 {
+			if d, err := strconv.ParseFloat(strings.TrimSpace(st.Duration), 64); err == nil && d > 0 && !math.IsNaN(d) && !math.IsInf(d, 0) {
+				meta.durationSec = d
+			}
+		}
+		rot := extractStreamRotation(st)
+		if rot == 90 || rot == 270 {
+			w, h = h, w
+		}
+		meta.width = w
+		meta.height = h
+		break
+	}
+	return meta, nil
+}
+
+func extractStreamRotation(st ffprobeStream) int {
+	for _, sd := range st.SideDataList {
+		if sd.Rotation != nil {
+			deg := ((int(math.Round(*sd.Rotation)) % 360) + 360) % 360
+			return deg
+		}
+	}
+	for k, v := range st.Tags {
+		if strings.EqualFold(k, "rotate") {
+			if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+				return ((int(math.Round(f)) % 360) + 360) % 360
+			}
+		}
+	}
+	return 0
+}
+
+func buildVideoAsset(ctx context.Context, fullPath, relSlash string, mtime, size int64, modTime time.Time) store.Asset {
+	a := store.Asset{
+		ID:          DeterministicUUID(relSlash),
+		RelPath:     relSlash,
+		MediaType:   "VIDEO",
+		Mtime:       mtime,
+		Size:        size,
+		Album:       deriveAlbum(relSlash),
+		Orientation: 1,
+		IndexedAt:   time.Now().UTC(),
+	}
+
+	meta, err := probeVideo(ctx, fullPath)
+	if err != nil {
+		slog.Warn("ffprobe video failed", "path", relSlash, "error", err)
+	} else {
+		a.DurationSec = meta.durationSec
+		a.Width = meta.width
+		a.Height = meta.height
+	}
+
+	a.TakenAt = resolveDate(time.Time{}, relSlash, modTime)
 	a.TakenYear = a.TakenAt.UTC().Year()
 	a.TakenMonth = int(a.TakenAt.UTC().Month())
 	a.TakenDay = a.TakenAt.UTC().Day()

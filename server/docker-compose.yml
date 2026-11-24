@@ -3,8 +3,8 @@ services:
     build:
       context: ./photo-api
     container_name: photo-api
-    mem_limit: 1300m
-    memswap_limit: 1300m
+    mem_limit: 2048m
+    memswap_limit: 2048m
     # Match your Synology DSM user/group so DSM ACLs allow reading /photos:ro and writing /data.
     # Run `id <your-dsm-username>` via SSH on your NAS (commonly 1026:100 on Synology).
     user: "${PUID:-1026}:${PGID:-100}"
@@ -24,6 +24,10 @@ services:
       - CACHE_MODE=${CACHE_MODE:-memory}
       - CACHE_MAX_MB=${CACHE_MAX_MB:-1024}
       - MAX_CONCURRENT_DECODES=${MAX_CONCURRENT_DECODES:-2}
+      - VIDEO_MAX_WIDTH=${VIDEO_MAX_WIDTH:-1920}
+      - VIDEO_MAX_HEIGHT=${VIDEO_MAX_HEIGHT:-1080}
+      - VIDEO_FPS=${VIDEO_FPS:-30}
+      - MAX_CONCURRENT_VIDEO_TRANSCODES=${MAX_CONCURRENT_VIDEO_TRANSCODES:-1}
       - PREBAKE_BLUR=${PREBAKE_BLUR:-false}
       - FRAME_WIDTH=${FRAME_WIDTH:-1440}
       - FRAME_HEIGHT=${FRAME_HEIGHT:-2560}

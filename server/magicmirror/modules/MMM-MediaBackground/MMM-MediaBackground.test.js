@@ -589,3 +589,389 @@ test("MMM-MediaBackground browser DOM maintains <= 2 crossfade slots, clears img
 		}
 	}
 });
+
+test("Express route /mediabackground/stream/:id pipes multipart/x-mixed-replace chunks unbuffered with Cache-Control: no-store, forwards window/fps, injects x-api-key, and aborts upstream on client disconnect", async () => {
+	let capturedUrl = null;
+	let capturedApiKey = null;
+	let upstreamAborted = false;
+	let sendSecondChunk = null;
+	let finishUpstream = null;
+
+	const upstream = await startTestHttpServer((req, res) => {
+		capturedUrl = req.url;
+		capturedApiKey = req.headers["x-api-key"];
+		if (req.url.startsWith("/api/assets/vid-101/stream")) {
+			res.writeHead(200, {
+				"Content-Type": "multipart/x-mixed-replace; boundary=frame",
+				"Cache-Control": "no-store"
+			});
+			res.write(Buffer.from("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\n\r\n\xff\xd8\x01\xd9\r\n", "latin1"));
+			sendSecondChunk = () => {
+				res.write(Buffer.from("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\n\r\n\xff\xd8\x02\xd9\r\n", "latin1"));
+			};
+			finishUpstream = () => {
+				if (!res.writableEnded) {
+					res.end();
+				}
+			};
+			req.on("close", () => {
+				if (!res.writableEnded) {
+					upstreamAborted = true;
+				}
+			});
+			return;
+		}
+		res.statusCode = 404;
+		res.end("missing");
+	});
+
+	const app = createMiniExpressApp();
+	registerMediaRoutes(app, () => ({
+		url: upstream.baseUrl,
+		apiKey: "stream-secret",
+		timeout: 5000
+	}));
+	const proxy = await startTestHttpServer((req, res) => app.handle(req, res));
+
+	try {
+		const badResp = await fetch(`${proxy.baseUrl}/mediabackground/stream/..%2Fsecret?window=12&fps=30`);
+		assert.equal(badResp.status, 400);
+
+		const receivedChunks = [];
+		await new Promise((resolve, reject) => {
+			const clientReq = http.get(
+				`${proxy.baseUrl}/mediabackground/stream/vid-101?window=12&fps=24&t=999&source=0`,
+				(clientRes) => {
+					assert.equal(clientRes.statusCode, 200);
+					assert.equal(clientRes.headers["content-type"], "multipart/x-mixed-replace; boundary=frame");
+					assert.equal(clientRes.headers["cache-control"], "no-store");
+
+					clientRes.on("data", (chunk) => {
+						receivedChunks.push(Buffer.from(chunk));
+						if (receivedChunks.length === 1) {
+							// Upstream has NOT ended; receiving chunk 1 proves headers & chunk 1 flushed without whole-body buffering
+							sendSecondChunk();
+						} else if (receivedChunks.length >= 2) {
+							clientReq.destroy();
+							resolve();
+						}
+					});
+				}
+			);
+			clientReq.on("error", (err) => {
+				if (err.code !== "ECONNRESET") {
+					reject(err);
+				}
+			});
+		});
+
+		assert.equal(capturedUrl, "/api/assets/vid-101/stream?window=12&fps=24");
+		assert.equal(capturedApiKey, "stream-secret");
+		const combined = Buffer.concat(receivedChunks).toString("latin1");
+		assert.equal(combined.includes("\xff\xd8\x01\xd9"), true);
+		assert.equal(combined.includes("\xff\xd8\x02\xd9"), true);
+
+		for (let i = 0; i < 40 && !upstreamAborted; i++) {
+			await new Promise((r) => setTimeout(r, 15));
+		}
+		assert.equal(upstreamAborted, true, "expected upstream MJPEG stream to abort immediately on client disconnect");
+		if (finishUpstream) finishUpstream();
+	} finally {
+		await proxy.close();
+		await upstream.close();
+	}
+});
+
+test("createSlideshowController resolves Playback Window precedence, paces VIDEO vs IMAGE timers, and passes mediaType across anniversary, random, metadata, and memory pools", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+
+	const requests = [];
+	const upstream = await startTestHttpServer((req, res) => {
+		let raw = "";
+		req.on("data", (c) => { raw += c; });
+		req.on("end", () => {
+			const parsed = raw ? JSON.parse(raw) : null;
+			requests.push({ method: req.method, url: req.url, apiKey: req.headers["x-api-key"], body: parsed });
+			res.setHeader("Content-Type", "application/json");
+			if (req.url.startsWith("/api/memories")) {
+				res.end(JSON.stringify([
+					{
+						id: "on-this-day-2022-07-15",
+						type: "on_this_day",
+						assets: [
+							{ id: "mem-img", type: "IMAGE", durationSeconds: 0, exifInfo: {} },
+							{ id: "mem-vid", type: "VIDEO", durationSeconds: 18.4, exifInfo: {} }
+						]
+					}
+				]));
+				return;
+			}
+			res.end(JSON.stringify([
+				{ id: "vid-1", type: "VIDEO", durationSeconds: 45.2, albumName: "Summer", exifInfo: {} },
+				{ id: "img-2", type: "IMAGE", durationSeconds: 0, albumName: "Summer", exifInfo: {} }
+			]));
+		});
+	});
+
+	const emitted = [];
+	const july15 = new Date(Date.UTC(2026, 6, 15, 12, 0, 0));
+	const controller = createSlideshowController({
+		sendNotification: (name, payload) => emitted.push({ name, payload }),
+		nowFn: () => july15,
+		randomFn: () => 0.99
+	});
+
+	const flushAsyncPoolReload = async (expectedLen) => {
+		for (let i = 0; i < 50 && emitted.length < expectedLen; i++) {
+			await new Promise((r) => setImmediate(r));
+		}
+	};
+
+	try {
+		// 1. Default Playback Window falls back to slideshowSpeed (15000ms -> 15s), videoFps=30, videoMuted=true
+		await controller.configure("mod_vid", Object.assign({}, MediaBackgroundModule.defaults, {
+			slideshowSpeed: 15000,
+			sources: [{
+				url: upstream.baseUrl,
+				apiKey: "vid-key",
+				mode: "random",
+				sortBy: "none"
+			}]
+		}));
+
+		assert.equal(requests[0].body.type, undefined);
+		assert.equal(emitted.length, 1);
+		assert.equal(emitted[0].payload.assetId, "vid-1");
+		assert.equal(emitted[0].payload.type, "VIDEO");
+		assert.equal(emitted[0].payload.durationSeconds, 45.2);
+		assert.equal(emitted[0].payload.playbackWindowSeconds, 15);
+		assert.equal(emitted[0].payload.videoFps, 30);
+		assert.equal(emitted[0].payload.videoMuted, true);
+
+		t.mock.timers.tick(14999);
+		assert.equal(emitted.length, 1, "should not advance before 15s default Playback Window");
+		t.mock.timers.tick(1);
+		await flushAsyncPoolReload(2);
+		assert.equal(emitted.length, 2);
+		assert.equal(emitted[1].payload.assetId, "img-2");
+		assert.equal(emitted[1].payload.type, "IMAGE");
+
+		// 2. Explicit videoSlideshowSpeed (20000ms) paces VIDEO at 20s while IMAGE stays at slideshowSpeed (12000ms)
+		emitted.length = 0;
+		await controller.configure("mod_vid", Object.assign({}, MediaBackgroundModule.defaults, {
+			slideshowSpeed: 12000,
+			videoSlideshowSpeed: 20000,
+			sources: [{
+				url: upstream.baseUrl,
+				apiKey: "vid-key",
+				mode: "random",
+				mediaType: "VIDEO",
+				sortBy: "none"
+			}]
+		}));
+		assert.equal(requests.at(-1).body.type, "VIDEO");
+		assert.equal(emitted[0].payload.playbackWindowSeconds, 20);
+
+		t.mock.timers.tick(19999);
+		assert.equal(emitted.length, 1);
+		t.mock.timers.tick(1);
+		await flushAsyncPoolReload(2);
+		assert.equal(emitted.length, 2);
+		assert.equal(emitted[1].payload.assetId, "img-2");
+
+		// IMAGE slide advances after slideshowSpeed (12000ms), NOT videoSlideshowSpeed (20000ms)
+		t.mock.timers.tick(11999);
+		assert.equal(emitted.length, 2);
+		t.mock.timers.tick(1);
+		await flushAsyncPoolReload(3);
+		assert.equal(emitted.length, 3, "IMAGE slide should trigger next tick after 12s slideshowSpeed");
+
+		// 3. maxVideoDurationSeconds (8s) overrides videoSlideshowSpeed (20000ms), plus memory mode with mediaType="VIDEO"
+		emitted.length = 0;
+		await controller.configure("mod_vid", Object.assign({}, MediaBackgroundModule.defaults, {
+			slideshowSpeed: 14000,
+			videoSlideshowSpeed: 20000,
+			maxVideoDurationSeconds: 8,
+			videoFps: 24,
+			videoMuted: false,
+			immichConfigs: [{
+				url: upstream.baseUrl,
+				apiKey: "vid-key",
+				mode: "memory",
+				query: { type: "VIDEO" },
+				sortBy: "none"
+			}]
+		}));
+
+		assert.equal(requests.at(-1).method, "GET");
+		assert.equal(requests.at(-1).url.startsWith("/api/memories?for=2026-07-15"), true);
+		assert.equal(emitted.length, 1);
+		assert.equal(emitted[0].payload.assetId, "mem-vid", "memory mode with query.type=VIDEO should filter to VIDEO assets");
+		assert.equal(emitted[0].payload.playbackWindowSeconds, 8);
+		assert.equal(emitted[0].payload.videoFps, 24);
+		assert.equal(emitted[0].payload.videoMuted, false);
+
+		t.mock.timers.tick(7999);
+		assert.equal(emitted.length, 1);
+		t.mock.timers.tick(1);
+		await flushAsyncPoolReload(2);
+		// Single-item pool reloads after 8s Playback Window
+		assert.equal(emitted.length, 2);
+	} finally {
+		controller.stopAll();
+		await upstream.close();
+	}
+});
+
+test("MMM-MediaBackground renders VIDEO slides via <img> MJPEG stream over static backdrop, formats trimmed vs looped 🎥 badges, and clears img.src immediately on teardown and suspend", () => {
+	const prevMoment = global.moment;
+	global.moment = createTimezoneAwareTestMoment();
+
+	try {
+		const fakeDoc = createFakeDomEnvironment();
+		const instance = Object.create(MediaBackgroundModule);
+		instance.name = "MMM-MediaBackground";
+		instance.identifier = "module_video_1";
+		instance.documentRef = fakeDoc;
+		instance.config = Object.assign({}, MediaBackgroundModule.defaults, {
+			slideshowSpeed: 12000,
+			sources: [{ url: "http://photo-api:2283", apiKey: "**SECRET_0**" }]
+		});
+		instance.sendSocketNotification = () => {};
+
+		instance.start();
+		const root = instance.getDom();
+		const stage = root.children[0];
+		const infoDiv = root.children[1];
+
+		// 1. Trimmed VIDEO (45s > 12s Playback Window) -> 🎥 0:12 / 0:45
+		instance.socketNotificationReceived("MEDIABACKGROUND_DISPLAY", {
+			identifier: instance.identifier,
+			assetId: "vid-trimmed",
+			type: "VIDEO",
+			durationSeconds: 45,
+			playbackWindowSeconds: 12,
+			videoFps: 30,
+			sourceIndex: 0,
+			previewUrl: "/mediabackground/preview/vid-trimmed?source=0",
+			backdropUrl: "/mediabackground/backdrop/vid-trimmed?source=0",
+			index: 2,
+			total: 10,
+			albumName: "Birthday Party",
+			exifInfo: {
+				dateTimeOriginal: "2023-07-15T10:30:00Z",
+				city: "Irvine",
+				state: "California",
+				country: "United States"
+			},
+			infoFields: ["date", "geo", "count", "album"],
+			dateFormat: "DD-MM-YYYY dddd HH:mm",
+			showMediaInfo: true,
+			showBlurredBackdrop: true,
+			backgroundSize: "contain",
+			backgroundPosition: "center",
+			transitionSpeed: "500ms",
+			infoPosition: "bottomRight"
+		});
+
+		assert.equal(stage.children.length, 1);
+		const slot1 = stage.children[0];
+		const backdrop1 = slot1.children[0];
+		const img1 = slot1.children[1];
+		assert.equal(backdrop1.className, "mmmb-backdrop");
+		assert.equal(backdrop1.style.backgroundImage, "url(\"/mediabackground/backdrop/vid-trimmed?source=0\")");
+		assert.equal(img1.tagName, "IMG");
+
+		const parsedUrl1 = new URL(img1.src, "http://127.0.0.1");
+		assert.equal(parsedUrl1.pathname, "/mediabackground/stream/vid-trimmed");
+		assert.equal(parsedUrl1.searchParams.get("window"), "12");
+		assert.equal(parsedUrl1.searchParams.get("fps"), "30");
+		assert.equal(Boolean(parsedUrl1.searchParams.get("t")), true, "expected cache-busting t=<nonce> param");
+
+		img1.onload();
+		assert.equal(infoDiv.children[0].textContent, "2 of 10Birthday Party");
+		assert.equal(infoDiv.children[1].textContent, "15-07-2023 Saturday 10:30");
+		assert.equal(infoDiv.children[2].textContent, "Irvine, California, United States");
+		assert.equal(infoDiv.children[3].textContent, "🎥 0:12 / 0:45");
+
+		// 2. Looped shorter VIDEO (5s <= 12s Playback Window) -> 🎥 0:05 and tears down outgoing MJPEG img1.src=""
+		instance.socketNotificationReceived("MEDIABACKGROUND_DISPLAY", {
+			identifier: instance.identifier,
+			assetId: "vid-loop",
+			type: "VIDEO",
+			durationSeconds: 5,
+			playbackWindowSeconds: 12,
+			videoFps: 24,
+			previewUrl: "/mediabackground/preview/vid-loop?source=0",
+			backdropUrl: "/mediabackground/backdrop/vid-loop?source=0",
+			index: 3,
+			total: 10,
+			albumName: "",
+			exifInfo: {
+				dateTimeOriginal: "2024-01-01T08:00:00Z",
+				city: null,
+				state: null,
+				country: null
+			},
+			infoFields: ["date", "geo", "count", "album"],
+			dateFormat: "DD-MM-YYYY dddd HH:mm",
+			showMediaInfo: true,
+			showBlurredBackdrop: true,
+			backgroundSize: "contain",
+			backgroundPosition: "center",
+			transitionSpeed: "500ms",
+			infoPosition: "bottomRight"
+		});
+
+		const slot2 = stage.children[1];
+		const img2 = slot2.children[1];
+		const parsedUrl2 = new URL(img2.src, "http://127.0.0.1");
+		assert.equal(parsedUrl2.pathname, "/mediabackground/stream/vid-loop");
+		assert.equal(parsedUrl2.searchParams.get("window"), "12");
+		assert.equal(parsedUrl2.searchParams.get("fps"), "24");
+		assert.notEqual(parsedUrl2.searchParams.get("t"), parsedUrl1.searchParams.get("t"));
+
+		img2.onload();
+		slot2.dispatchEvent({ type: "transitionend" });
+
+		assert.equal(stage.children.length, 1);
+		assert.equal(img1.src, "", "outgoing MJPEG img.src must be cleared immediately on slide transition teardown");
+		assert.equal(infoDiv.children.at(-1).textContent, "🎥 0:05");
+
+		// 3. Equal-length clip (12.02s ~ 12s window) renders 🎥 0:12 (not 🎥 0:12 / 0:12) and suspend() clears img.src=""
+		instance.socketNotificationReceived("MEDIABACKGROUND_DISPLAY", {
+			identifier: instance.identifier,
+			assetId: "vid-equal",
+			type: "VIDEO",
+			durationSeconds: 12.02,
+			playbackWindowSeconds: 12,
+			videoFps: 30,
+			previewUrl: "/mediabackground/preview/vid-equal",
+			backdropUrl: "/mediabackground/backdrop/vid-equal",
+			index: 4,
+			total: 10,
+			albumName: "",
+			exifInfo: { dateTimeOriginal: "2024-01-01T08:00:00Z" },
+			infoFields: ["date"],
+			dateFormat: "DD-MM-YYYY dddd HH:mm",
+			showMediaInfo: true,
+			showBlurredBackdrop: true,
+			transitionSpeed: "0s"
+		});
+		const slot3 = stage.children.at(-1);
+		const img3 = slot3.children[1];
+		img3.onload();
+		assert.equal(img2.src, "");
+		assert.equal(infoDiv.children.at(-1).textContent, "🎥 0:12");
+
+		instance.suspend();
+		assert.equal(img3.src, "", "suspend() must clear active MJPEG img.src immediately");
+		assert.equal(stage.children.length, 0);
+	} finally {
+		if (prevMoment === undefined) {
+			delete global.moment;
+		} else {
+			global.moment = prevMoment;
+		}
+	}
+});

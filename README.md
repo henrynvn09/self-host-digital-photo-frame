@@ -6,7 +6,7 @@ A lightweight, self-hosted digital photo frame for a 27-inch 2K monitor powered 
 
 ## Features
 
-- 🖼️ **2K Photo Slideshow** - Lightweight pure-Go `photo-api` (~20 MB RAM) reads your Synology Photos folder read-only (`:ro`), caches 2K JPEG previews (including `.heic`) in a 1 GB LRU cache, and tags photos with offline city names
+- 🖼️ **2K Photo & Silent 30 fps Video Slideshow** - Lightweight pure-Go `photo-api` reads your Synology `Library` read-only (`:ro`), caches 2K photo `Preview`s (including `.heic`), pre-blurred `Backdrop`s, and silent `1080p`-max 30 fps video `Preview`s (`.mp4`/`.mov`/`.m4v`/`.webm`) in a 1 GB in-memory LRU cache, and streams MJPEG video across a bounded `Playback Window` through `MMM-MediaBackground` with zero extra codecs on the Raspberry Pi `Frame Client`
 - 📅 **Google Calendar** - Shows upcoming events in Vietnamese (`CUỘC HẸN SẮP TỚI`) with `DD/MM` start-end dates and 24-hour times, synced every minute from a Google Calendar share link or `.ics` feed
 - ✅ **Google Sheets To-Do** - Displays your checklist (`Việc cần làm`) synced every minute directly from a shared Google Spreadsheet ([`todo-template.csv`](./server/magicmirror/config/todo-template.csv)) with zero OAuth tokens
 - 🌤️ **Weather Forecast** - Multi-day OpenWeatherMap integration
@@ -42,7 +42,7 @@ A lightweight, self-hosted digital photo frame for a 27-inch 2K monitor powered 
    - Set `DATA_PATH` to a writable folder for the SQLite index and 1 GB preview cache.
    - Set `API_KEY` to any secret string.
 4. Edit `server/magicmirror/config/config.js`:
-   - Set `apiKey` in both `MMM-ImmichSlideShow` blocks to match `API_KEY` from `server/.env`.
+   - Set `apiKey` in both `MMM-MediaBackground` `sources` entries to match `API_KEY` from `server/.env`.
    - Paste your Google Calendar share link (`https://calendar.google.com/calendar/u/0?cid=...`) or `.ics` link into `resolveGoogleCalendarUrl(...)` under `calendar`.
    - Import [`server/magicmirror/config/todo-template.csv`](./server/magicmirror/config/todo-template.csv) into Google Sheets (**Insert > Checkbox** on Column A), share as **Anyone with the link (Viewer)**, and paste its URL into `spreadsheetUrl` under `MMM-GoogleSheetsToDo`.
    - Set your OpenWeatherMap `apikey`, `latitude`, and `longitude` under `MMM-OpenWeatherMapForecast`.

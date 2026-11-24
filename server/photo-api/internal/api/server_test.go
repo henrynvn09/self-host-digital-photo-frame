@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -9,11 +10,16 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"math"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -130,11 +136,11 @@ func TestEndToEndPhotoAPI(t *testing.T) {
 	writeSyntheticHEICWithCreateDate(t, filepath.Join(env.photosDir, "2020", "Phone Backup", "iphone.heic"),
 		"2020:07:15 08:15:00", 6, 10.8231, 106.6297)
 
-	// - Synology system folders, excluded folders, and non-image files (must all be skipped)
+	// - Synology system folders, excluded folders, and unsupported non-media files (must all be skipped)
 	writePNG(t, filepath.Join(env.photosDir, "2023", "@eaDir", "thumb.png"), 100, 100)
 	writePNG(t, filepath.Join(env.photosDir, "#recycle", "deleted.png"), 100, 100)
 	writePNG(t, filepath.Join(env.photosDir, "Screenshots", "screen.png"), 100, 100)
-	if err := os.WriteFile(filepath.Join(env.photosDir, "2023", "clip.mp4"), []byte("not-an-image"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(env.photosDir, "2023", "notes.txt"), []byte("not-media"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -819,5 +825,457 @@ func TestAssetBackdropEndpoint(t *testing.T) {
 	if cachedBackRec.Code != http.StatusOK || !bytes.Equal(cachedBackRec.Body.Bytes(), rawBackdrop) {
 		t.Fatalf("expected cached backdrop from RAM LRU after source removal, got status=%d len=%d",
 			cachedBackRec.Code, cachedBackRec.Body.Len())
+	}
+}
+
+func synthesizeTestVideo(t *testing.T, path string, width, height, fps int, durationSec float64, withAudio bool, rotateDeg int) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+
+	targetPath := path
+	var rawTmp string
+	if rotateDeg != 0 {
+		rawTmp = path + ".raw.mp4"
+		targetPath = rawTmp
+		defer func() { _ = os.Remove(rawTmp) }()
+	}
+
+	args := []string{
+		"-y", "-hide_banner", "-loglevel", "error",
+		"-f", "lavfi", "-i", fmt.Sprintf("testsrc=size=%dx%d:rate=%d", width, height, fps),
+	}
+	if withAudio {
+		args = append(args, "-f", "lavfi", "-i", "sine=frequency=440")
+	}
+	args = append(args, "-t", strconv.FormatFloat(durationSec, 'f', -1, 64))
+	if ext == ".webm" && rotateDeg == 0 {
+		args = append(args, "-c:v", "libvpx", "-b:v", "200k", "-pix_fmt", "yuv420p")
+		if withAudio {
+			args = append(args, "-c:a", "libvorbis")
+		}
+	} else {
+		args = append(args, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p")
+		if withAudio {
+			args = append(args, "-c:a", "aac")
+		}
+		if ext == ".m4v" && rotateDeg == 0 {
+			args = append(args, "-f", "ipod")
+		}
+	}
+	args = append(args, targetPath)
+
+	if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
+		t.Fatalf("synthesize video %s: %v (%s)", path, err, strings.TrimSpace(string(out)))
+	}
+
+	if rotateDeg != 0 {
+		rotArgs := []string{
+			"-y", "-hide_banner", "-loglevel", "error",
+			"-i", rawTmp,
+			"-c", "copy",
+			"-metadata:s:v:0", fmt.Sprintf("rotate=%d", rotateDeg),
+			path,
+		}
+		if out, err := exec.Command("ffmpeg", rotArgs...).CombinedOutput(); err != nil {
+			t.Fatalf("apply rotation %d to %s: %v (%s)", rotateDeg, path, err, strings.TrimSpace(string(out)))
+		}
+	}
+}
+
+func readMJPEGFrames(t *testing.T, resp *http.Response, stopAfter int, cancel context.CancelFunc) []image.Image {
+	t.Helper()
+	ct := resp.Header.Get("Content-Type")
+	mediaType, params, err := mime.ParseMediaType(ct)
+	if err != nil {
+		t.Fatalf("parse Content-Type %q: %v", ct, err)
+	}
+	if mediaType != "multipart/x-mixed-replace" {
+		t.Fatalf("expected multipart/x-mixed-replace, got %q", mediaType)
+	}
+	boundary := params["boundary"]
+	if boundary != "frame" {
+		t.Fatalf("expected boundary=frame, got %q", boundary)
+	}
+
+	mr := multipart.NewReader(resp.Body, boundary)
+	var frames []image.Image
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			if stopAfter > 0 && len(frames) >= stopAfter {
+				break
+			}
+			t.Fatalf("read multipart frame %d: %v", len(frames), err)
+		}
+		raw, err := io.ReadAll(part)
+		_ = part.Close()
+		if err != nil {
+			if stopAfter > 0 && len(frames) >= stopAfter {
+				break
+			}
+			t.Fatalf("read frame body %d: %v", len(frames), err)
+		}
+		img, err := jpeg.Decode(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatalf("decode JPEG frame %d (%d bytes): %v", len(frames), len(raw), err)
+		}
+		frames = append(frames, img)
+		if stopAfter > 0 && len(frames) >= stopAfter {
+			if cancel != nil {
+				cancel()
+			}
+			break
+		}
+	}
+	return frames
+}
+
+func TestVideoIndexingSearchBackdropAndMJPEGStream(t *testing.T) {
+	env := setupTestEnv(t, 1024, "memory")
+
+	// 1. Populate mixed photo + video Library across .mp4, .MOV, .m4v, and .webm
+	photoRel := "2023/Birthday Party/photo_20230715.png"
+	writePNG(t, filepath.Join(env.photosDir, filepath.FromSlash(photoRel)), 600, 400)
+
+	// Long >1080p 60fps video with audio (5.0s, 2000x1124, 60fps) -> tests trimming, 1080p downscale, 30/target fps cap, and -an
+	longRel := "2023/Birthday Party/cake_20230715.mp4"
+	synthesizeTestVideo(t, filepath.Join(env.photosDir, filepath.FromSlash(longRel)), 2000, 1124, 60, 5.0, true, 0)
+
+	// Rotated portrait QuickTime .MOV (3.0s, 320x180 coded with rotate=90 -> 180x320 display, 24fps)
+	rotRel := "2021/Portrait Walk/vertical_20210715.MOV"
+	synthesizeTestVideo(t, filepath.Join(env.photosDir, filepath.FromSlash(rotRel)), 320, 180, 24, 3.0, false, 90)
+
+	// Short clip for server-side looping (.m4v, 1.0s, 320x180, 10fps)
+	shortRel := "2022/Summer/loop_20220715.m4v"
+	longShortFullPath := filepath.Join(env.photosDir, filepath.FromSlash(shortRel))
+	synthesizeTestVideo(t, longShortFullPath, 320, 180, 10, 1.0, false, 0)
+
+	// WebM clip (.webm, 1.5s, 320x240, 15fps)
+	webmRel := "2020/Web Clips/clip_20200715.webm"
+	synthesizeTestVideo(t, filepath.Join(env.photosDir, filepath.FromSlash(webmRel)), 320, 240, 15, 1.5, false, 0)
+
+	// 2. Initial Scan indexes all 5 assets; second Scan skips all 5 unchanged files
+	scanRec := env.doJSON(t, "POST", "/api/admin/scan", nil, true)
+	if scanRec.Code != http.StatusOK {
+		t.Fatalf("scan failed: %d %s", scanRec.Code, scanRec.Body.String())
+	}
+	var stats scanner.Stats
+	if err := json.Unmarshal(scanRec.Body.Bytes(), &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Added != 5 || stats.Errors != 0 {
+		t.Fatalf("expected 5 added (1 photo + 4 videos), got %+v", stats)
+	}
+
+	rescanRec := env.doJSON(t, "POST", "/api/admin/scan", nil, true)
+	if err := json.Unmarshal(rescanRec.Body.Bytes(), &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Skipped != 5 || stats.Added != 0 || stats.Updated != 0 {
+		t.Fatalf("expected all 5 unchanged media files skipped on rescan, got %+v", stats)
+	}
+
+	// 3. Verify GET /api/assets/{id} metadata for rotated portrait .MOV
+	rotID := scanner.DeterministicUUID(rotRel)
+	assetRec := env.doJSON(t, "GET", "/api/assets/"+rotID, nil, true)
+	if assetRec.Code != http.StatusOK {
+		t.Fatalf("get rotated video asset failed: %d %s", assetRec.Code, assetRec.Body.String())
+	}
+	var rotMeta struct {
+		ID              string  `json:"id"`
+		Type            string  `json:"type"`
+		DurationSeconds float64 `json:"durationSeconds"`
+		AlbumName       string  `json:"albumName"`
+		ExifInfo        struct {
+			Orientation     string `json:"orientation"`
+			ExifImageWidth  int    `json:"exifImageWidth"`
+			ExifImageHeight int    `json:"exifImageHeight"`
+		} `json:"exifInfo"`
+	}
+	if err := json.Unmarshal(assetRec.Body.Bytes(), &rotMeta); err != nil {
+		t.Fatal(err)
+	}
+	if rotMeta.Type != "VIDEO" {
+		t.Fatalf("expected type VIDEO, got %q", rotMeta.Type)
+	}
+	if math.Abs(rotMeta.DurationSeconds-3.0) > 0.25 {
+		t.Fatalf("expected durationSeconds ~3.0, got %v", rotMeta.DurationSeconds)
+	}
+	if rotMeta.ExifInfo.ExifImageWidth != 180 || rotMeta.ExifInfo.ExifImageHeight != 320 {
+		t.Fatalf("expected 90-deg swapped dimensions 180x320, got %dx%d",
+			rotMeta.ExifInfo.ExifImageWidth, rotMeta.ExifInfo.ExifImageHeight)
+	}
+	if rotMeta.ExifInfo.Orientation != "1" {
+		t.Fatalf("expected normalized orientation '1', got %q", rotMeta.ExifInfo.Orientation)
+	}
+	if rotMeta.AlbumName != "Portrait Walk" {
+		t.Fatalf("expected albumName 'Portrait Walk', got %q", rotMeta.AlbumName)
+	}
+
+	// 4. Unified & filtered search across metadata, smart, random, and memories
+	type assetItem struct {
+		ID              string  `json:"id"`
+		Type            string  `json:"type"`
+		DurationSeconds float64 `json:"durationSeconds"`
+	}
+	for _, tc := range []struct {
+		typeFilter string
+		wantTotal  int
+		wantImages int
+		wantVideos int
+	}{
+		{typeFilter: "", wantTotal: 5, wantImages: 1, wantVideos: 4},
+		{typeFilter: "ALL", wantTotal: 5, wantImages: 1, wantVideos: 4},
+		{typeFilter: "IMAGE", wantTotal: 1, wantImages: 1, wantVideos: 0},
+		{typeFilter: "VIDEO", wantTotal: 4, wantImages: 0, wantVideos: 4},
+		{typeFilter: "AUDIO", wantTotal: 0, wantImages: 0, wantVideos: 0},
+	} {
+		for _, ep := range []string{"/api/search/metadata", "/api/search/smart"} {
+			rec := env.doJSON(t, "POST", ep, map[string]any{"type": tc.typeFilter, "size": 50}, true)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s (type=%q) failed: %d", ep, tc.typeFilter, rec.Code)
+			}
+			var body struct {
+				Assets struct {
+					Total int         `json:"total"`
+					Items []assetItem `json:"items"`
+				} `json:"assets"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Assets.Total != tc.wantTotal || len(body.Assets.Items) != tc.wantTotal {
+				t.Fatalf("%s (type=%q): expected %d items, got total=%d len=%d",
+					ep, tc.typeFilter, tc.wantTotal, body.Assets.Total, len(body.Assets.Items))
+			}
+		}
+
+		randRec := env.doJSON(t, "POST", "/api/search/random", map[string]any{"type": tc.typeFilter, "size": 50}, true)
+		if randRec.Code != http.StatusOK {
+			t.Fatalf("random (type=%q) failed: %d", tc.typeFilter, randRec.Code)
+		}
+		var randItems []assetItem
+		if err := json.Unmarshal(randRec.Body.Bytes(), &randItems); err != nil {
+			t.Fatal(err)
+		}
+		gotImg, gotVid := 0, 0
+		for _, it := range randItems {
+			switch it.Type {
+			case "IMAGE":
+				gotImg++
+				if it.DurationSeconds != 0 {
+					t.Fatalf("expected IMAGE durationSeconds=0, got %v", it.DurationSeconds)
+				}
+			case "VIDEO":
+				gotVid++
+				if it.DurationSeconds <= 0 {
+					t.Fatalf("expected VIDEO durationSeconds>0, got %v", it.DurationSeconds)
+				}
+			default:
+				t.Fatalf("unexpected item type %q", it.Type)
+			}
+		}
+		if gotImg != tc.wantImages || gotVid != tc.wantVideos {
+			t.Fatalf("random (type=%q): expected %d images & %d videos, got %d images & %d videos",
+				tc.typeFilter, tc.wantImages, tc.wantVideos, gotImg, gotVid)
+		}
+	}
+
+	// Bounded anniversary /api/search/random returns unified photo + video pool by default
+	annivRec := env.doJSON(t, "POST", "/api/search/random", map[string]any{
+		"takenAfter":  "2023-07-01T00:00:00Z",
+		"takenBefore": "2023-07-31T23:59:59Z",
+		"size":        10,
+	}, true)
+	var annivItems []assetItem
+	if err := json.Unmarshal(annivRec.Body.Bytes(), &annivItems); err != nil {
+		t.Fatal(err)
+	}
+	if len(annivItems) != 2 {
+		t.Fatalf("expected 2 unified 2023 anniversary assets (1 photo + 1 video), got %d", len(annivItems))
+	}
+
+	// GET /api/memories returns both IMAGE and VIDEO assets on July 15 across years
+	memRec := env.doJSON(t, "GET", "/api/memories?for=2025-07-15T00:00:00Z", nil, true)
+	if memRec.Code != http.StatusOK {
+		t.Fatalf("memories failed: %d", memRec.Code)
+	}
+	var memBuckets []struct {
+		Assets []assetItem `json:"assets"`
+	}
+	if err := json.Unmarshal(memRec.Body.Bytes(), &memBuckets); err != nil {
+		t.Fatal(err)
+	}
+	if len(memBuckets) != 4 {
+		t.Fatalf("expected 4 yearly memory buckets (2023, 2022, 2021, 2020), got %d", len(memBuckets))
+	}
+
+	// 5. Video /thumbnail poster & /backdrop pre-blurred JPEG in memory mode with zero disk writes
+	vidThumbRec := env.doJSON(t, "GET", "/api/assets/"+rotID+"/thumbnail", nil, true)
+	if vidThumbRec.Code != http.StatusOK {
+		t.Fatalf("video thumbnail failed: %d %s", vidThumbRec.Code, vidThumbRec.Body.String())
+	}
+	vidThumbImg, err := jpeg.Decode(bytes.NewReader(vidThumbRec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("decode video poster jpeg: %v", err)
+	}
+	if vidThumbImg.Bounds().Dx() != 180 || vidThumbImg.Bounds().Dy() != 320 {
+		t.Fatalf("expected auto-rotated 180x320 video poster, got %dx%d",
+			vidThumbImg.Bounds().Dx(), vidThumbImg.Bounds().Dy())
+	}
+
+	vidBackRec := env.doJSON(t, "GET", "/api/assets/"+rotID+"/backdrop", nil, true)
+	if vidBackRec.Code != http.StatusOK {
+		t.Fatalf("video backdrop failed: %d %s", vidBackRec.Code, vidBackRec.Body.String())
+	}
+	vidBackImg, err := jpeg.Decode(bytes.NewReader(vidBackRec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("decode video backdrop jpeg: %v", err)
+	}
+	if vidBackImg.Bounds().Dx() != 360 || vidBackImg.Bounds().Dy() != 640 {
+		t.Fatalf("expected 360x640 blurred video backdrop, got %dx%d",
+			vidBackImg.Bounds().Dx(), vidBackImg.Bounds().Dy())
+	}
+
+	// 6. MJPEG /api/assets/{id}/stream: auth, 404, 400 on IMAGE, trimming, 1080p cap, rotation, looping, LRU keying, and disconnect abort
+	photoID := scanner.DeterministicUUID(photoRel)
+	longID := scanner.DeterministicUUID(longRel)
+	shortID := scanner.DeterministicUUID(shortRel)
+
+	if rec := env.doJSON(t, "GET", "/api/assets/"+longID+"/stream?window=2&fps=10", nil, false); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without api key on /stream, got %d", rec.Code)
+	}
+	if rec := env.doJSON(t, "GET", "/api/assets/missing-id/stream?window=2&fps=10", nil, true); rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown asset on /stream, got %d", rec.Code)
+	}
+	if rec := env.doJSON(t, "GET", "/api/assets/"+photoID+"/stream?window=2&fps=10", nil, true); rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when streaming an IMAGE asset, got %d", rec.Code)
+	}
+
+	ts := httptest.NewServer(env.httpHandler)
+	defer ts.Close()
+
+	doStream := func(ctx context.Context, path string) *http.Response {
+		req, err := http.NewRequestWithContext(ctx, "GET", ts.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("x-api-key", env.apiKey)
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// 6a. Long 5s 2000x1124@60fps video trimmed to window=2&fps=10 -> ~20 frames in ~2s, downscaled <=1920x1080 even dims
+	trimStart := time.Now()
+	trimResp := doStream(context.Background(), "/api/assets/"+longID+"/stream?window=2&fps=10")
+	if trimResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(trimResp.Body)
+		_ = trimResp.Body.Close()
+		t.Fatalf("expected 200 on long /stream, got %d: %s", trimResp.StatusCode, string(body))
+	}
+	if cc := trimResp.Header.Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Fatalf("expected Cache-Control: no-store on /stream, got %q", cc)
+	}
+	trimFrames := readMJPEGFrames(t, trimResp, 0, nil)
+	_ = trimResp.Body.Close()
+	trimElapsed := time.Since(trimStart)
+
+	if len(trimFrames) < 17 || len(trimFrames) > 23 {
+		t.Fatalf("expected ~20 MJPEG frames for window=2&fps=10 on 5s clip, got %d", len(trimFrames))
+	}
+	if trimElapsed < 1500*time.Millisecond || trimElapsed > 4500*time.Millisecond {
+		t.Fatalf("expected ~2s paced stream duration, got %v", trimElapsed)
+	}
+	fw, fh := trimFrames[0].Bounds().Dx(), trimFrames[0].Bounds().Dy()
+	if fw != 1920 || fh > 1080 || fw%2 != 0 || fh%2 != 0 {
+		t.Fatalf("expected 1080p-capped even dimensions (1920x<=1080) from 2000x1124 source, got %dx%d", fw, fh)
+	}
+
+	// 6b. Rotated portrait 320x180 (rotate=90, 24fps) streamed with window=1&fps=30 -> 180x320 frames capped at source 24fps
+	rotResp := doStream(context.Background(), "/api/assets/"+rotID+"/stream?window=1&fps=30")
+	if rotResp.StatusCode != http.StatusOK {
+		_ = rotResp.Body.Close()
+		t.Fatalf("expected 200 on rotated /stream, got %d", rotResp.StatusCode)
+	}
+	rotFrames := readMJPEGFrames(t, rotResp, 0, nil)
+	_ = rotResp.Body.Close()
+	if len(rotFrames) < 20 || len(rotFrames) > 26 {
+		t.Fatalf("expected ~24 frames (preserving 24fps <= 30fps cap) in 1s window, got %d", len(rotFrames))
+	}
+	if rotFrames[0].Bounds().Dx() != 180 || rotFrames[0].Bounds().Dy() != 320 {
+		t.Fatalf("expected auto-rotated portrait 180x320 MJPEG frames, got %dx%d",
+			rotFrames[0].Bounds().Dx(), rotFrames[0].Bounds().Dy())
+	}
+
+	// 6c. Short 1.0s@10fps clip with window=2.5&fps=10 -> loops seamlessly (~25 frames across ~2.5s)
+	loopStart := time.Now()
+	loopResp := doStream(context.Background(), "/api/assets/"+shortID+"/stream?window=2.5&fps=10")
+	if loopResp.StatusCode != http.StatusOK {
+		_ = loopResp.Body.Close()
+		t.Fatalf("expected 200 on looped /stream, got %d", loopResp.StatusCode)
+	}
+	loopFrames := readMJPEGFrames(t, loopResp, 0, nil)
+	_ = loopResp.Body.Close()
+	loopElapsed := time.Since(loopStart)
+	if len(loopFrames) < 22 || len(loopFrames) > 28 {
+		t.Fatalf("expected ~25 looped MJPEG frames for 1s clip over 2.5s@10fps window, got %d", len(loopFrames))
+	}
+	if loopElapsed < 2000*time.Millisecond || loopElapsed > 4500*time.Millisecond {
+		t.Fatalf("expected ~2.5s looped stream duration, got %v", loopElapsed)
+	}
+
+	// 6d. Verify zero disk writes in memory mode + RAM LRU cache keyed by (id, mtime, window, fps)
+	if _, statErr := os.Stat(filepath.Join(env.dataDir, "cache")); !os.IsNotExist(statErr) {
+		entries, _ := os.ReadDir(filepath.Join(env.dataDir, "cache"))
+		if len(entries) > 0 {
+			t.Fatalf("expected zero disk cache files in memory mode, found %d", len(entries))
+		}
+	}
+	if err := os.Remove(longShortFullPath); err != nil {
+		t.Fatal(err)
+	}
+	// Same (id, mtime, window=2.5, fps=10) serves from RAM LRU even with source file removed!
+	cachedCtx, cachedCancel := context.WithCancel(context.Background())
+	cachedResp := doStream(cachedCtx, "/api/assets/"+shortID+"/stream?window=2.5&fps=10")
+	if cachedResp.StatusCode != http.StatusOK {
+		cachedCancel()
+		_ = cachedResp.Body.Close()
+		t.Fatalf("expected RAM LRU hit (200) for same (id,mtime,window,fps) after source deletion, got %d", cachedResp.StatusCode)
+	}
+	cachedFrames := readMJPEGFrames(t, cachedResp, 3, cachedCancel)
+	_ = cachedResp.Body.Close()
+	if len(cachedFrames) < 3 {
+		t.Fatalf("expected frames streamed from RAM LRU, got %d", len(cachedFrames))
+	}
+	// Different window (window=1.5) misses cache and fails cleanly since source file was deleted
+	missResp := doStream(context.Background(), "/api/assets/"+shortID+"/stream?window=1.5&fps=10")
+	_ = missResp.Body.Close()
+	if missResp.StatusCode == http.StatusOK {
+		t.Fatalf("expected cache miss for distinct window=1.5 after source removal, got 200")
+	}
+
+	// 6e. Immediate termination on client disconnect (10s window canceled after 2 frames finishes in << 1s)
+	discCtx, discCancel := context.WithCancel(context.Background())
+	discStart := time.Now()
+	discResp := doStream(discCtx, "/api/assets/"+longID+"/stream?window=10&fps=10")
+	if discResp.StatusCode != http.StatusOK {
+		discCancel()
+		_ = discResp.Body.Close()
+		t.Fatalf("expected 200 on disconnect test stream, got %d", discResp.StatusCode)
+	}
+	_ = readMJPEGFrames(t, discResp, 2, discCancel)
+	_ = discResp.Body.Close()
+	discElapsed := time.Since(discStart)
+	if discElapsed > 2500*time.Millisecond {
+		t.Fatalf("expected client disconnect to abort 10s stream promptly (<2.5s), took %v", discElapsed)
 	}
 }

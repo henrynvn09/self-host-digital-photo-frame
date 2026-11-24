@@ -43,7 +43,7 @@ curl -fsS "http://127.0.0.1:${PORT}/api/server/ping" | grep -q '"pong"'
 echo "Checking /api/server/version with x-api-key..."
 curl -fsS -H "x-api-key: smoke-secret" "http://127.0.0.1:${PORT}/api/server/version" | grep -q '"major"'
 
-echo "Checking heif-convert & GeoNames cities1000.txt inside container..."
-docker exec "$CONTAINER" sh -c 'test "$(id -u)" = "1026" && command -v heif-convert >/dev/null && test -s /app/geonames/cities1000.txt'
+echo "Checking heif-convert, ffmpeg, ffprobe & GeoNames cities1000.txt inside container..."
+docker exec "$CONTAINER" sh -c 'test "$(id -u)" = "1026" && command -v heif-convert >/dev/null && command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null && test -s /app/geonames/cities1000.txt'
 
 echo "Smoke test PASSED!"

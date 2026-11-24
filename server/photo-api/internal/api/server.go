@@ -53,6 +53,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/assets/{id}", s.handleGetAsset)
 	s.mux.HandleFunc("GET /api/assets/{id}/thumbnail", s.handleAssetPreview)
 	s.mux.HandleFunc("GET /api/assets/{id}/backdrop", s.handleAssetBackdrop)
+	s.mux.HandleFunc("GET /api/assets/{id}/stream", s.handleAssetStream)
 	s.mux.HandleFunc("POST /api/admin/scan", s.handleAdminScan)
 }
 
@@ -102,6 +103,7 @@ type immichExifInfo struct {
 type immichAsset struct {
 	ID               string         `json:"id"`
 	Type             string         `json:"type"`
+	DurationSeconds  float64        `json:"durationSeconds"`
 	OriginalPath     string         `json:"originalPath"`
 	OriginalFileName string         `json:"originalFileName"`
 	FileCreatedAt    string         `json:"fileCreatedAt"`
@@ -114,9 +116,16 @@ type immichAsset struct {
 func toImmichAsset(a store.Asset) immichAsset {
 	taken := a.TakenAt.UTC().Format(time.RFC3339)
 	mod := time.Unix(a.Mtime, 0).UTC().Format(time.RFC3339)
+	assetType := "IMAGE"
+	var dur float64
+	if strings.EqualFold(a.MediaType, "VIDEO") {
+		assetType = "VIDEO"
+		dur = a.DurationSec
+	}
 	return immichAsset{
 		ID:               a.ID,
-		Type:             "IMAGE",
+		Type:             assetType,
+		DurationSeconds:  dur,
 		OriginalPath:     a.RelPath,
 		OriginalFileName: filepath.Base(a.RelPath),
 		FileCreatedAt:    taken,
@@ -153,7 +162,8 @@ type searchRequest struct {
 }
 
 type parsedSearch struct {
-	nonImage    bool
+	unknownType bool
+	mediaType   string
 	takenAfter  *time.Time
 	takenBefore *time.Time
 	order       string
@@ -166,8 +176,16 @@ func parseSearchRequest(r *http.Request) (parsedSearch, error) {
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
-	if req.Type != "" && !strings.EqualFold(req.Type, "IMAGE") {
-		return parsedSearch{nonImage: true}, nil
+	var mediaType string
+	switch strings.ToUpper(strings.TrimSpace(req.Type)) {
+	case "", "ALL":
+		mediaType = ""
+	case "IMAGE":
+		mediaType = "IMAGE"
+	case "VIDEO":
+		mediaType = "VIDEO"
+	default:
+		return parsedSearch{unknownType: true}, nil
 	}
 	takenAfter, err := parseOptionalTime(req.TakenAfter)
 	if err != nil {
@@ -178,6 +196,7 @@ func parseSearchRequest(r *http.Request) (parsedSearch, error) {
 		return parsedSearch{}, fmt.Errorf("invalid takenBefore")
 	}
 	return parsedSearch{
+		mediaType:   mediaType,
 		takenAfter:  takenAfter,
 		takenBefore: takenBefore,
 		order:       req.Order,
@@ -192,7 +211,7 @@ func (s *Server) handleSearchMetadata(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 		return
 	}
-	if ps.nonImage {
+	if ps.unknownType {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"assets": map[string]any{
 				"total":    0,
@@ -208,6 +227,7 @@ func (s *Server) handleSearchMetadata(w http.ResponseWriter, r *http.Request) {
 	res, err := s.store.SearchMetadata(r.Context(), store.SearchParams{
 		TakenAfter:  ps.takenAfter,
 		TakenBefore: ps.takenBefore,
+		MediaType:   ps.mediaType,
 		Order:       ps.order,
 		Page:        page,
 		Size:        size,
@@ -244,12 +264,12 @@ func (s *Server) handleSearchRandom(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 		return
 	}
-	if ps.nonImage {
+	if ps.unknownType {
 		writeJSON(w, http.StatusOK, []immichAsset{})
 		return
 	}
 
-	assets, err := s.store.SearchRandom(r.Context(), ps.takenAfter, ps.takenBefore, ps.size)
+	assets, err := s.store.SearchRandom(r.Context(), ps.takenAfter, ps.takenBefore, ps.size, ps.mediaType)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
@@ -349,6 +369,57 @@ func (s *Server) handleAssetPreview(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAssetBackdrop(w http.ResponseWriter, r *http.Request) {
 	s.serveAssetRendition(w, r, preview.BackdropKind, s.cache.GetOrGenerateBackdrop)
+}
+
+func (s *Server) handleAssetStream(w http.ResponseWriter, r *http.Request) {
+	asset := s.lookupAsset(w, r)
+	if asset == nil {
+		return
+	}
+	if !strings.EqualFold(asset.MediaType, "VIDEO") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Asset is not a video"})
+		return
+	}
+
+	q := r.URL.Query()
+	var windowSec float64
+	if rawWin := strings.TrimSpace(q.Get("window")); rawWin != "" {
+		if parsedWin, err := strconv.ParseFloat(rawWin, 64); err == nil && parsedWin > 0 {
+			windowSec = parsedWin
+		}
+	}
+	var requestedFPS int
+	if rawFPS := strings.TrimSpace(q.Get("fps")); rawFPS != "" {
+		if parsedFPS, err := strconv.Atoi(rawFPS); err == nil && parsedFPS > 0 {
+			requestedFPS = parsedFPS
+		}
+	}
+
+	sourcePath := filepath.Join(s.libraryDir, filepath.FromSlash(asset.RelPath))
+	clip, err := s.cache.GetOrGenerateVideoClip(r.Context(), asset.ID, asset.Mtime, sourcePath, windowSec, requestedFPS)
+	if err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+
+	flusher, _ := w.(http.Flusher)
+	var flushFn func()
+	if flusher != nil {
+		flushFn = flusher.Flush
+	}
+
+	w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	if flushFn != nil {
+		flushFn()
+	}
+
+	_ = s.cache.StreamMJPEG(r.Context(), w, flushFn, clip, asset.DurationSec)
 }
 
 func (s *Server) serveAssetRendition(

@@ -111,6 +111,10 @@ let config = {
 			position: "fullscreen_below",
 			config: {
 				slideshowSpeed: 15000,
+				videoSlideshowSpeed: null,     // Playback Window in ms (defaults to slideshowSpeed when null)
+				maxVideoDurationSeconds: null, // Optional Playback Window override in seconds
+				videoFps: 30,
+				videoMuted: true,
 				transitionSpeed: "1.2s",
 				backgroundSize: "contain",
 				showBlurredBackdrop: true,
@@ -128,13 +132,14 @@ let config = {
 						anniversaryStartYear: 2010,
 						anniversaryEndYear: 2026,
 						querySize: 100,
+						mediaType: "ALL",
 					},
 					{
 						url: "http://photo-api:2283",
 						apiKey: "CHANGE_ME_TO_MATCH_API_KEY_IN_ENV",
 						mode: "random",
 						querySize: 1000,
-						mediaType: "IMAGE",
+						mediaType: "ALL",
 					},
 				],
 			},

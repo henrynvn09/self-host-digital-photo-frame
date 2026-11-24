@@ -13,12 +13,14 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const assetColumns = `id, rel_path, mtime, size, taken_at, taken_year, taken_month, taken_day,
+const assetColumns = `id, rel_path, media_type, duration_sec, mtime, size, taken_at, taken_year, taken_month, taken_day,
        city, state, country, album, orientation, width, height, indexed_at`
 
 type Asset struct {
 	ID          string
 	RelPath     string
+	MediaType   string
+	DurationSec float64
 	Mtime       int64
 	Size        int64
 	TakenAt     time.Time
@@ -44,6 +46,7 @@ type PathMeta struct {
 type SearchParams struct {
 	TakenAfter  *time.Time
 	TakenBefore *time.Time
+	MediaType   string // "", "ALL", "IMAGE", or "VIDEO"
 	Order       string // "asc" or "desc"
 	Page        int
 	Size        int
@@ -98,6 +101,8 @@ func (s *Store) migrate() error {
 CREATE TABLE IF NOT EXISTS assets (
 	id TEXT PRIMARY KEY,
 	rel_path TEXT NOT NULL UNIQUE,
+	media_type TEXT NOT NULL DEFAULT 'IMAGE',
+	duration_sec REAL NOT NULL DEFAULT 0,
 	mtime INTEGER NOT NULL,
 	size INTEGER NOT NULL,
 	taken_at TEXT NOT NULL,
@@ -117,11 +122,48 @@ CREATE INDEX IF NOT EXISTS idx_assets_taken_at ON assets(taken_at);
 CREATE INDEX IF NOT EXISTS idx_assets_month_day ON assets(taken_month, taken_day, taken_year);
 CREATE INDEX IF NOT EXISTS idx_assets_rel_path ON assets(rel_path);
 `
-	_, err := s.db.Exec(ddl)
-	if err != nil {
+	if _, err := s.db.Exec(ddl); err != nil {
 		return fmt.Errorf("migrate sqlite schema: %w", err)
 	}
+
+	cols, err := s.existingColumns("assets")
+	if err != nil {
+		return fmt.Errorf("inspect assets columns: %w", err)
+	}
+	if !cols["media_type"] {
+		if _, err := s.db.Exec(`ALTER TABLE assets ADD COLUMN media_type TEXT NOT NULL DEFAULT 'IMAGE'`); err != nil {
+			return fmt.Errorf("add media_type column: %w", err)
+		}
+	}
+	if !cols["duration_sec"] {
+		if _, err := s.db.Exec(`ALTER TABLE assets ADD COLUMN duration_sec REAL NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add duration_sec column: %w", err)
+		}
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_assets_media_type ON assets(media_type)`); err != nil {
+		return fmt.Errorf("create media_type index: %w", err)
+	}
 	return nil
+}
+
+func (s *Store) existingColumns(table string) (map[string]bool, error) {
+	rows, err := s.db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	cols := make(map[string]bool)
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, colType string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		cols[name] = true
+	}
+	return cols, rows.Err()
 }
 
 func (s *Store) ListPathMeta(ctx context.Context) (map[string]PathMeta, error) {
@@ -143,14 +185,39 @@ func (s *Store) ListPathMeta(ctx context.Context) (map[string]PathMeta, error) {
 	return out, rows.Err()
 }
 
+func normalizeStoredMediaType(mt string) string {
+	if strings.EqualFold(strings.TrimSpace(mt), "VIDEO") {
+		return "VIDEO"
+	}
+	return "IMAGE"
+}
+
+func normalizeFilterMediaType(mediaType ...string) string {
+	if len(mediaType) == 0 {
+		return ""
+	}
+	switch strings.ToUpper(strings.TrimSpace(mediaType[0])) {
+	case "", "ALL":
+		return ""
+	case "IMAGE":
+		return "IMAGE"
+	case "VIDEO":
+		return "VIDEO"
+	default:
+		return "INVALID"
+	}
+}
+
 func (s *Store) UpsertAsset(ctx context.Context, a Asset) error {
 	const q = `
 INSERT INTO assets (
-	id, rel_path, mtime, size, taken_at, taken_year, taken_month, taken_day,
+	id, rel_path, media_type, duration_sec, mtime, size, taken_at, taken_year, taken_month, taken_day,
 	city, state, country, album, orientation, width, height, indexed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(rel_path) DO UPDATE SET
 	id = excluded.id,
+	media_type = excluded.media_type,
+	duration_sec = excluded.duration_sec,
 	mtime = excluded.mtime,
 	size = excluded.size,
 	taken_at = excluded.taken_at,
@@ -170,6 +237,8 @@ ON CONFLICT(rel_path) DO UPDATE SET
 	_, err := s.db.ExecContext(ctx, q,
 		a.ID,
 		a.RelPath,
+		normalizeStoredMediaType(a.MediaType),
+		a.DurationSec,
 		a.Mtime,
 		a.Size,
 		takenUTC.Format(time.RFC3339),
@@ -225,7 +294,11 @@ func (s *Store) GetAsset(ctx context.Context, id string) (*Asset, error) {
 }
 
 func (s *Store) SearchMetadata(ctx context.Context, p SearchParams) (SearchResult, error) {
-	where, args := buildDateWhere(p.TakenAfter, p.TakenBefore)
+	mt := normalizeFilterMediaType(p.MediaType)
+	if mt == "INVALID" {
+		return SearchResult{Items: []Asset{}, Total: 0}, nil
+	}
+	where, args := buildSearchWhere(p.TakenAfter, p.TakenBefore, mt)
 
 	var total int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM assets`+where, args...).Scan(&total); err != nil {
@@ -261,20 +334,25 @@ const (
 )
 
 // SearchRandom returns a deterministic pseudo-random slice of assets for the current day.
-func (s *Store) SearchRandom(ctx context.Context, takenAfter, takenBefore *time.Time, size int) ([]Asset, error) {
+func (s *Store) SearchRandom(ctx context.Context, takenAfter, takenBefore *time.Time, size int, mediaType ...string) ([]Asset, error) {
 	now := time.Now().UTC()
-	return s.SearchRandomAtYear(ctx, takenAfter, takenBefore, size, now.YearDay(), now.Year())
+	return s.SearchRandomAtYear(ctx, takenAfter, takenBefore, size, now.YearDay(), now.Year(), mediaType...)
 }
 
 // SearchRandomAt performs deterministic multi-round pseudorandom sampling without replacement based on dayOfYear.
 // It uses the current calendar year to salt the seed.
-func (s *Store) SearchRandomAt(ctx context.Context, takenAfter, takenBefore *time.Time, size int, dayOfYear int) ([]Asset, error) {
-	return s.SearchRandomAtYear(ctx, takenAfter, takenBefore, size, dayOfYear, time.Now().UTC().Year())
+func (s *Store) SearchRandomAt(ctx context.Context, takenAfter, takenBefore *time.Time, size int, dayOfYear int, mediaType ...string) ([]Asset, error) {
+	return s.SearchRandomAtYear(ctx, takenAfter, takenBefore, size, dayOfYear, time.Now().UTC().Year(), mediaType...)
 }
 
 // SearchRandomAtYear performs deterministic multi-round pseudorandom sampling without replacement with seamless straddle stitch.
 // It requires zero database writes, eliminates lock contention, and provides idempotent daily pools.
-func (s *Store) SearchRandomAtYear(ctx context.Context, takenAfter, takenBefore *time.Time, size int, dayOfYear int, currentYear int) ([]Asset, error) {
+func (s *Store) SearchRandomAtYear(ctx context.Context, takenAfter, takenBefore *time.Time, size int, dayOfYear int, currentYear int, mediaType ...string) ([]Asset, error) {
+	mt := normalizeFilterMediaType(mediaType...)
+	if mt == "INVALID" {
+		return []Asset{}, nil
+	}
+
 	if size <= 0 {
 		size = defaultRandomSize
 	}
@@ -284,8 +362,10 @@ func (s *Store) SearchRandomAtYear(ctx context.Context, takenAfter, takenBefore 
 
 	// If no date bounds are specified, maintain pure stateless random sampling across the entire library
 	if takenAfter == nil && takenBefore == nil {
-		q := fmt.Sprintf(`SELECT %s FROM assets ORDER BY RANDOM() LIMIT ?`, assetColumns)
-		rows, err := s.db.QueryContext(ctx, q, size)
+		where, args := buildSearchWhere(nil, nil, mt)
+		q := fmt.Sprintf(`SELECT %s FROM assets%s ORDER BY RANDOM() LIMIT ?`, assetColumns, where)
+		qArgs := append(args, size)
+		rows, err := s.db.QueryContext(ctx, q, qArgs...)
 		if err != nil {
 			return nil, err
 		}
@@ -293,7 +373,7 @@ func (s *Store) SearchRandomAtYear(ctx context.Context, takenAfter, takenBefore 
 		return scanAssets(rows)
 	}
 
-	where, args := buildDateWhere(takenAfter, takenBefore)
+	where, args := buildSearchWhere(takenAfter, takenBefore, mt)
 
 	allIDs, err := s.listMatchingIDs(ctx, where, args)
 	if err != nil {
@@ -488,9 +568,13 @@ func (s *Store) MemoriesForDate(ctx context.Context, month, day, currentYear int
 	return scanAssets(rows)
 }
 
-func buildDateWhere(takenAfter, takenBefore *time.Time) (string, []any) {
+func buildSearchWhere(takenAfter, takenBefore *time.Time, mediaType string) (string, []any) {
 	var clauses []string
 	var args []any
+	if mediaType == "IMAGE" || mediaType == "VIDEO" {
+		clauses = append(clauses, "media_type = ?")
+		args = append(args, mediaType)
+	}
 	if takenAfter != nil {
 		clauses = append(clauses, "taken_at >= ?")
 		args = append(args, takenAfter.UTC().Format(time.RFC3339))
@@ -513,7 +597,7 @@ func scanAsset(r rowScanner) (Asset, error) {
 	var a Asset
 	var takenStr, indexedStr string
 	err := r.Scan(
-		&a.ID, &a.RelPath, &a.Mtime, &a.Size,
+		&a.ID, &a.RelPath, &a.MediaType, &a.DurationSec, &a.Mtime, &a.Size,
 		&takenStr, &a.TakenYear, &a.TakenMonth, &a.TakenDay,
 		&a.City, &a.State, &a.Country, &a.Album,
 		&a.Orientation, &a.Width, &a.Height, &indexedStr,
@@ -521,6 +605,7 @@ func scanAsset(r rowScanner) (Asset, error) {
 	if err != nil {
 		return Asset{}, err
 	}
+	a.MediaType = normalizeStoredMediaType(a.MediaType)
 	a.TakenAt, _ = time.Parse(time.RFC3339, takenStr)
 	a.IndexedAt, _ = time.Parse(time.RFC3339, indexedStr)
 	return a, nil

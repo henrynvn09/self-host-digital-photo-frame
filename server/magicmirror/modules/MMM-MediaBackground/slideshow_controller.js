@@ -4,6 +4,10 @@ const http = require("node:http");
 const https = require("node:https");
 
 const DEFAULT_SLIDESHOW_SPEED_MS = 12000;
+const DEFAULT_VIDEO_FPS = 30;
+const MAX_VIDEO_FPS = 30;
+const MIN_VIDEO_WINDOW_MS = 500;
+const MAX_VIDEO_WINDOW_MS = 300000;
 const DEFAULT_TRANSITION_SPEED = "1.2s";
 const DEFAULT_DATE_FORMAT = "DD-MM-YYYY dddd HH:mm";
 const DEFAULT_INFO_FIELDS = ["date", "geo", "count", "album"];
@@ -11,7 +15,7 @@ const DEFAULT_TIMEOUT_MS = 15000;
 const POOL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const EMPTY_RETRY_MS = 60 * 1000;
 
-const VALID_MODES = new Set(["anniversary", "random", "metadata"]);
+const VALID_MODES = new Set(["anniversary", "random", "metadata", "memory"]);
 const VALID_INFO_FIELDS = new Set(["date", "geo", "count", "album"]);
 const VALID_POSITIONS = new Set(["bottomRight", "bottomLeft", "topRight", "topLeft"]);
 
@@ -55,6 +59,38 @@ function nonNegativeInt(value, fallback) {
 	return Math.trunc(num);
 }
 
+function parsePositiveNumber(value) {
+	if (value === undefined || value === null || value === "") {
+		return null;
+	}
+	const num = Number(value);
+	return Number.isFinite(num) && num > 0 ? num : null;
+}
+
+function clampVideoWindowMs(ms) {
+	return Math.min(MAX_VIDEO_WINDOW_MS, Math.max(MIN_VIDEO_WINDOW_MS, Math.round(ms)));
+}
+
+function resolveVideoWindowMs(rawObj, fallbackMs) {
+	const maxSec = parsePositiveNumber(rawObj && rawObj.maxVideoDurationSeconds);
+	if (maxSec !== null) {
+		return clampVideoWindowMs(maxSec * 1000);
+	}
+	const speedMs = parsePositiveNumber(rawObj && rawObj.videoSlideshowSpeed);
+	if (speedMs !== null) {
+		return clampVideoWindowMs(speedMs);
+	}
+	return clampVideoWindowMs(fallbackMs);
+}
+
+function normalizeVideoFps(value) {
+	const parsed = parsePositiveNumber(value);
+	if (parsed === null) {
+		return DEFAULT_VIDEO_FPS;
+	}
+	return Math.min(MAX_VIDEO_FPS, Math.max(1, Math.trunc(parsed)));
+}
+
 function normalizeMediaType(source) {
 	const raw = source.mediaType ?? (source.query && source.query.type) ?? "ALL";
 	const upper = String(raw).trim().toUpperCase();
@@ -65,7 +101,7 @@ function normalizeSource(rawSource, baseSource, moduleDefaults, currentYear) {
 	const merged = Object.assign({}, baseSource || {}, rawSource || {});
 	const rawUrl = String(merged.url ?? merged.immichUrl ?? "").trim().replace(/\/+$/, "");
 	const rawMode = String(merged.mode ?? "anniversary").trim().toLowerCase();
-	const mode = VALID_MODES.has(rawMode) ? rawMode : "anniversary";
+	const mode = rawMode === "memories" ? "memory" : (VALID_MODES.has(rawMode) ? rawMode : "anniversary");
 
 	const startYear = clampInt(merged.anniversaryStartYear, 1900, 9999, 2010);
 	const defaultEndYear = Math.max(startYear, currentYear);
@@ -84,6 +120,11 @@ function normalizeSource(rawSource, baseSource, moduleDefaults, currentYear) {
 	const sortBy = rawSort ? String(rawSort).trim().toLowerCase() : defaultSort;
 
 	const rawFields = merged.infoFields ?? merged.imageInfo;
+	const slideshowSpeed = clampInt(merged.slideshowSpeed, 1000, 86400000, moduleDefaults.slideshowSpeed);
+	const fallbackVideoWindowMs = moduleDefaults.hasExplicitVideoWindow
+		? moduleDefaults.videoWindowMs
+		: slideshowSpeed;
+	const videoWindowMs = resolveVideoWindowMs(merged, fallbackVideoWindowMs);
 
 	return {
 		url: rawUrl,
@@ -98,7 +139,8 @@ function normalizeSource(rawSource, baseSource, moduleDefaults, currentYear) {
 		query: rawQuery,
 		mediaType: normalizeMediaType(merged),
 		sortBy: sortBy === "random" ? "random" : "none",
-		slideshowSpeed: clampInt(merged.slideshowSpeed, 1000, 86400000, moduleDefaults.slideshowSpeed),
+		slideshowSpeed,
+		videoWindowMs,
 		dateFormat: String(merged.dateFormat || moduleDefaults.dateFormat),
 		infoFields: rawFields != null ? normalizeInfoFields(rawFields, moduleDefaults.infoFields) : [...moduleDefaults.infoFields]
 	};
@@ -106,6 +148,13 @@ function normalizeSource(rawSource, baseSource, moduleDefaults, currentYear) {
 
 function normalizeConfig(rawConfig = {}, currentYear = new Date().getUTCFullYear()) {
 	const slideshowSpeed = clampInt(rawConfig.slideshowSpeed, 1000, 86400000, DEFAULT_SLIDESHOW_SPEED_MS);
+	const hasExplicitVideoWindow =
+		parsePositiveNumber(rawConfig.maxVideoDurationSeconds) !== null ||
+		parsePositiveNumber(rawConfig.videoSlideshowSpeed) !== null;
+	const videoWindowMs = resolveVideoWindowMs(rawConfig, slideshowSpeed);
+	const videoFps = normalizeVideoFps(rawConfig.videoFps);
+	const videoMuted = rawConfig.videoMuted != null ? Boolean(rawConfig.videoMuted) : true;
+
 	const transitionSpeed = rawConfig.transitionImages === false
 		? "0s"
 		: String(rawConfig.transitionSpeed ?? DEFAULT_TRANSITION_SPEED).trim() || DEFAULT_TRANSITION_SPEED;
@@ -129,7 +178,13 @@ function normalizeConfig(rawConfig = {}, currentYear = new Date().getUTCFullYear
 	const rawPos = String(rawConfig.infoPosition ?? rawConfig.imageInfoLocation ?? "bottomRight").trim();
 	const infoPosition = VALID_POSITIONS.has(rawPos) ? rawPos : "bottomRight";
 
-	const moduleDefaults = { slideshowSpeed, dateFormat, infoFields };
+	const moduleDefaults = {
+		slideshowSpeed,
+		videoWindowMs,
+		hasExplicitVideoWindow,
+		dateFormat,
+		infoFields
+	};
 
 	let rawSources = [];
 	if (Array.isArray(rawConfig.sources) && rawConfig.sources.length > 0) {
@@ -158,6 +213,9 @@ function normalizeConfig(rawConfig = {}, currentYear = new Date().getUTCFullYear
 
 	return {
 		slideshowSpeed,
+		videoWindowMs,
+		videoFps,
+		videoMuted,
 		transitionSpeed,
 		backgroundSize,
 		backgroundPosition,
@@ -203,7 +261,7 @@ function mergeServerSecrets(clientConfig, serverConfig) {
 	return merged;
 }
 
-function postJson(baseUrl, path, { apiKey = "", body = {}, timeout = DEFAULT_TIMEOUT_MS } = {}) {
+function requestJson(baseUrl, path, { method = "POST", apiKey = "", body = null, timeout = DEFAULT_TIMEOUT_MS } = {}) {
 	return new Promise((resolve, reject) => {
 		let target;
 		try {
@@ -214,17 +272,21 @@ function postJson(baseUrl, path, { apiKey = "", body = {}, timeout = DEFAULT_TIM
 		}
 
 		const transport = target.protocol === "https:" ? https : http;
-		const payloadBuf = Buffer.from(JSON.stringify(body), "utf8");
+		const payloadBuf = method === "GET" || body === null
+			? null
+			: Buffer.from(JSON.stringify(body), "utf8");
 		const headers = {
-			Accept: "application/json",
-			"Content-Type": "application/json",
-			"Content-Length": String(payloadBuf.length)
+			Accept: "application/json"
 		};
+		if (payloadBuf) {
+			headers["Content-Type"] = "application/json";
+			headers["Content-Length"] = String(payloadBuf.length);
+		}
 		if (apiKey) {
 			headers["x-api-key"] = apiKey;
 		}
 
-		const req = transport.request(target, { method: "POST", headers, timeout }, (res) => {
+		const req = transport.request(target, { method, headers, timeout }, (res) => {
 			const chunks = [];
 			res.on("data", (chunk) => chunks.push(chunk));
 			res.on("end", () => {
@@ -245,7 +307,9 @@ function postJson(baseUrl, path, { apiKey = "", body = {}, timeout = DEFAULT_TIM
 			req.destroy(new Error(`Timeout after ${timeout}ms requesting ${target.pathname}`));
 		});
 		req.on("error", reject);
-		req.write(payloadBuf);
+		if (payloadBuf) {
+			req.write(payloadBuf);
+		}
 		req.end();
 	});
 }
@@ -277,6 +341,25 @@ function shuffleInPlace(list, randomFn) {
 	return list;
 }
 
+function parseAssetDurationSeconds(asset) {
+	if (!asset || typeof asset !== "object") {
+		return 0;
+	}
+	if (typeof asset.durationSeconds === "number" && Number.isFinite(asset.durationSeconds) && asset.durationSeconds > 0) {
+		return asset.durationSeconds;
+	}
+	if (typeof asset.duration === "number" && Number.isFinite(asset.duration) && asset.duration > 0) {
+		return asset.duration;
+	}
+	if (typeof asset.duration === "string" && asset.duration.trim()) {
+		const parts = asset.duration.trim().split(":").map(Number);
+		if (parts.length === 3 && parts.every((n) => Number.isFinite(n) && n >= 0)) {
+			return parts[0] * 3600 + parts[1] * 60 + parts[2];
+		}
+	}
+	return 0;
+}
+
 async function fetchSourceAssets(source, { now, randomFn, logger }) {
 	if (!source || !source.url) {
 		return [];
@@ -306,7 +389,7 @@ async function fetchSourceAssets(source, { now, randomFn, logger }) {
 			});
 
 			try {
-				const data = await postJson(source.url, "/api/search/random", {
+				const data = await requestJson(source.url, "/api/search/random", {
 					apiKey: source.apiKey,
 					body,
 					timeout: source.timeout
@@ -322,7 +405,7 @@ async function fetchSourceAssets(source, { now, randomFn, logger }) {
 		}
 	} else if (source.mode === "random") {
 		const body = buildSearchPayload(source, { size: source.querySize });
-		const data = await postJson(source.url, "/api/search/random", {
+		const data = await requestJson(source.url, "/api/search/random", {
 			apiKey: source.apiKey,
 			body,
 			timeout: source.timeout
@@ -332,13 +415,35 @@ async function fetchSourceAssets(source, { now, randomFn, logger }) {
 		}
 	} else if (source.mode === "metadata") {
 		const body = buildSearchPayload(source, { size: source.querySize });
-		const data = await postJson(source.url, "/api/search/metadata", {
+		const data = await requestJson(source.url, "/api/search/metadata", {
 			apiKey: source.apiKey,
 			body,
 			timeout: source.timeout
 		});
 		if (data && data.assets && Array.isArray(data.assets.items)) {
 			rawAssets = data.assets.items;
+		}
+	} else if (source.mode === "memory") {
+		const data = await requestJson(
+			source.url,
+			`/api/memories?for=${encodeURIComponent(now.toISOString())}`,
+			{
+				method: "GET",
+				apiKey: source.apiKey,
+				timeout: source.timeout
+			}
+		);
+		if (Array.isArray(data)) {
+			for (const bucket of data) {
+				if (bucket && Array.isArray(bucket.assets)) {
+					rawAssets.push(...bucket.assets);
+				}
+			}
+		}
+		if (source.mediaType === "IMAGE" || source.mediaType === "VIDEO") {
+			rawAssets = rawAssets.filter(
+				(item) => item && String(item.type || "IMAGE").toUpperCase() === source.mediaType
+			);
 		}
 	}
 
@@ -351,11 +456,19 @@ function buildDisplayPayload(session) {
 	const source = session.config.sources[session.activeSourceIndex];
 	const querySuffix = `?source=${session.activeSourceIndex}`;
 	const exif = asset.exifInfo || {};
+	const isVideo = String(asset.type || "").toUpperCase() === "VIDEO";
+	const windowMs = source.videoWindowMs || session.config.videoWindowMs || DEFAULT_SLIDESHOW_SPEED_MS;
+	const playbackWindowSeconds = Number((windowMs / 1000).toFixed(3));
 
 	return {
 		identifier: session.identifier,
 		assetId: asset.id,
-		type: asset.type || "IMAGE",
+		type: isVideo ? "VIDEO" : "IMAGE",
+		durationSeconds: isVideo ? parseAssetDurationSeconds(asset) : 0,
+		playbackWindowSeconds,
+		videoFps: session.config.videoFps,
+		videoMuted: session.config.videoMuted,
+		sourceIndex: session.activeSourceIndex,
 		previewUrl: `/mediabackground/preview/${encodeURIComponent(asset.id)}${querySuffix}`,
 		backdropUrl: `/mediabackground/backdrop/${encodeURIComponent(asset.id)}${querySuffix}`,
 		index: session.index + 1,
@@ -400,7 +513,11 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 			clearTimeout(session.slideTimer);
 		}
 		const source = session.config.sources[session.activeSourceIndex] || {};
-		const delayMs = source.slideshowSpeed || session.config.slideshowSpeed || DEFAULT_SLIDESHOW_SPEED_MS;
+		const currentAsset = session.assets[session.index];
+		const isVideo = Boolean(currentAsset && String(currentAsset.type || "").toUpperCase() === "VIDEO");
+		const delayMs = isVideo
+			? (source.videoWindowMs || session.config.videoWindowMs || DEFAULT_SLIDESHOW_SPEED_MS)
+			: (source.slideshowSpeed || session.config.slideshowSpeed || DEFAULT_SLIDESHOW_SPEED_MS);
 		session.slideTimer = setTimeout(() => {
 			advance(session.identifier).catch((err) => {
 				if (logger && typeof logger.error === "function") {
