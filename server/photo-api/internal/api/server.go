@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -51,6 +52,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/memories", s.handleMemories)
 	s.mux.HandleFunc("GET /api/assets/{id}", s.handleGetAsset)
 	s.mux.HandleFunc("GET /api/assets/{id}/thumbnail", s.handleAssetPreview)
+	s.mux.HandleFunc("GET /api/assets/{id}/backdrop", s.handleAssetBackdrop)
 	s.mux.HandleFunc("POST /api/admin/scan", s.handleAdminScan)
 }
 
@@ -342,19 +344,32 @@ func (s *Server) handleGetAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAssetPreview(w http.ResponseWriter, r *http.Request) {
+	s.serveAssetRendition(w, r, "", ".jpg", s.cache.GetOrGenerate)
+}
+
+func (s *Server) handleAssetBackdrop(w http.ResponseWriter, r *http.Request) {
+	s.serveAssetRendition(w, r, "backdrop-", ".backdrop.jpg", s.cache.GetOrGenerateBackdrop)
+}
+
+func (s *Server) serveAssetRendition(
+	w http.ResponseWriter,
+	r *http.Request,
+	etagPrefix, fileSuffix string,
+	generate func(rCtx context.Context, assetID, sourcePath string, orientation int) (preview.Result, error),
+) {
 	asset := s.lookupAsset(w, r)
 	if asset == nil {
 		return
 	}
 
-	etag := fmt.Sprintf(`"%s-%d"`, asset.ID, asset.Mtime)
+	etag := fmt.Sprintf(`"%s%s-%d"`, etagPrefix, asset.ID, asset.Mtime)
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 
 	sourcePath := filepath.Join(s.libraryDir, filepath.FromSlash(asset.RelPath))
-	res, err := s.cache.GetOrGenerate(r.Context(), asset.ID, sourcePath, asset.Orientation)
+	res, err := generate(r.Context(), asset.ID, sourcePath, asset.Orientation)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
@@ -364,7 +379,7 @@ func (s *Server) handleAssetPreview(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
 	if len(res.Data) > 0 {
-		http.ServeContent(w, r, asset.ID+".jpg", time.Unix(asset.Mtime, 0), bytes.NewReader(res.Data))
+		http.ServeContent(w, r, asset.ID+fileSuffix, time.Unix(asset.Mtime, 0), bytes.NewReader(res.Data))
 		return
 	}
 	http.ServeFile(w, r, res.Path)

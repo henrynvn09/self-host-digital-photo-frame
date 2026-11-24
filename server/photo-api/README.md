@@ -1,6 +1,6 @@
 # photo-api
 
-Lightweight, high-performance pure-Go photo indexing and serving service built for Synology NAS Container Manager. Exposes the Immich REST subset expected by `MMM-ImmichSlideShow` so you can drop Immich completely while keeping native **2K (2560×1440)** quality, EXIF capture dates, worldwide offline reverse geocoding (`city`, `state`, `country`), folder-derived `Album` names, and HEIC support.
+Lightweight, high-performance pure-Go photo indexing and serving service built for Synology NAS Container Manager. Powers `MMM-MediaBackground` (and exposes the Immich-compatible REST subset) so you can drop Immich completely while keeping native **2K (2560×1440)** quality, compact server-blurred backdrops, EXIF capture dates, worldwide offline reverse geocoding (`city`, `state`, `country`), folder-derived `Album` names, and HEIC support.
 
 ## Features
 - **Read-Only Library (`:ro`)**: Never modifies or deletes original photos.
@@ -40,6 +40,7 @@ Lightweight, high-performance pure-Go photo indexing and serving service built f
 - `GET /api/memories?for=<ISO-date>` — "On This Day" buckets across prior years
 - `GET /api/assets/{id}` — Single asset metadata
 - `GET /api/assets/{id}/thumbnail` — Cached 2K EXIF-oriented JPEG `Preview`
+- `GET /api/assets/{id}/backdrop` — Cached compact (`360×640`) pre-blurred, ~35%-darkened JPEG backdrop
 - `POST /api/admin/scan` — Trigger an immediate incremental `Scan`
 
 ## Running Tests via Docker

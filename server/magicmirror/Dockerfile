@@ -9,16 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 USER node
 WORKDIR /opt/magic_mirror/modules
 
-ARG IMMICH_SLIDESHOW_SHA=955c2538ccdd5b9702119826edcda549db937f55
 ARG WORLDCLOCK_SHA=e6bfe734462fa13472e8728434294f4ec1a6c304
 ARG OPENWEATHER_SHA=e36d50f725695c3d8649a35acbaeeb1446c33bbc
-
-RUN git init MMM-ImmichSlideShow \
-    && cd MMM-ImmichSlideShow \
-    && git remote add origin https://github.com/pelaxa/MMM-ImmichSlideShow.git \
-    && git fetch --depth 1 origin ${IMMICH_SLIDESHOW_SHA} \
-    && git checkout --detach FETCH_HEAD \
-    && npm install --omit=dev
 
 RUN git init MMM-Worldclock \
     && cd MMM-Worldclock \
@@ -35,6 +27,7 @@ RUN git init MMM-OpenWeatherMapForecast \
     && npm install --omit=dev
 
 COPY --chown=node:node modules/MMM-GoogleSheetsToDo /opt/magic_mirror/modules/MMM-GoogleSheetsToDo
+COPY --chown=node:node modules/MMM-MediaBackground /opt/magic_mirror/modules/MMM-MediaBackground
 
 WORKDIR /opt/magic_mirror
 

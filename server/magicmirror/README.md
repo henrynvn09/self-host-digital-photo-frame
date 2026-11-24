@@ -2,7 +2,7 @@
 
 Thin Dockerized **MagicMirror²** server extending pinned `karsten13/magicmirror:v2.38.0` with commit-pinned third-party modules and zero manual `npm install` steps on the Synology NAS:
 
-- `MMM-ImmichSlideShow`: connects privately to `http://photo-api:2283` over the Compose bridge network.
+- `MMM-MediaBackground` (bundled in `magicmirror/modules/MMM-MediaBackground`): zero-dependency fullscreen slideshow connecting privately to `http://photo-api:2283` over the Compose bridge network with a 2-slot crossfade DOM and server-blurred backdrops.
 - `MMM-Worldclock`: secondary timezone display (`VIETNAM`).
 - `calendar` (built-in): top-center upcoming events (`CUỘC HẸN SẮP TỚI`) synced every 1 minute from a Google Calendar share link (`?cid=...`) or iCal `.ics` URL.
 - `MMM-GoogleSheetsToDo` (bundled in `magicmirror/modules/MMM-GoogleSheetsToDo`): top-right to-do list (`Việc cần làm`) synced every 1 minute from a Google Sheet CSV export with zero OAuth tokens.

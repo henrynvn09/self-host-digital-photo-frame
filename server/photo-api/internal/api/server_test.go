@@ -688,3 +688,136 @@ func TestAPISearchRandomDeterministic(t *testing.T) {
 		}
 	}
 }
+
+func TestAssetBackdropEndpoint(t *testing.T) {
+	env := setupTestEnv(t, 50, "memory")
+
+	relPath := filepath.Join("2024", "Trip", "split_contrast.png")
+	fullPath := filepath.Join(env.photosDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srcImg := image.NewRGBA(image.Rect(0, 0, 1600, 900))
+	for y := 0; y < 900; y++ {
+		for x := 0; x < 1600; x++ {
+			if x < 800 {
+				srcImg.Set(x, y, color.RGBA{R: 240, G: 200, B: 160, A: 255})
+			} else {
+				srcImg.Set(x, y, color.RGBA{R: 20, G: 40, B: 220, A: 255})
+			}
+		}
+	}
+	f, err := os.Create(fullPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, srcImg); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	if rec := env.doJSON(t, "POST", "/api/admin/scan", nil, true); rec.Code != http.StatusOK {
+		t.Fatalf("scan failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	id := scanner.DeterministicUUID(filepath.ToSlash(relPath))
+
+	// 1. Auth & 404 behavior
+	if rec := env.doJSON(t, "GET", "/api/assets/"+id+"/backdrop", nil, false); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without api key, got %d", rec.Code)
+	}
+	if rec := env.doJSON(t, "GET", "/api/assets/missing-id/backdrop", nil, true); rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown asset, got %d", rec.Code)
+	}
+
+	// 2. Backdrop JPEG dimensions, compact size, ETag/304, ~35% darkening, and spatial blur
+	backRec := env.doJSON(t, "GET", "/api/assets/"+id+"/backdrop", nil, true)
+	if backRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for backdrop, got %d %s", backRec.Code, backRec.Body.String())
+	}
+	if ct := backRec.Header().Get("Content-Type"); ct != "image/jpeg" {
+		t.Fatalf("expected Content-Type image/jpeg, got %q", ct)
+	}
+	rawBackdrop := backRec.Body.Bytes()
+	if len(rawBackdrop) == 0 || len(rawBackdrop) > 60*1024 {
+		t.Fatalf("expected compact backdrop JPEG (1..61440 bytes), got %d bytes", len(rawBackdrop))
+	}
+
+	etag := backRec.Header().Get("ETag")
+	if etag == "" {
+		t.Fatalf("expected non-empty ETag on backdrop response")
+	}
+	req304 := httptest.NewRequest("GET", "/api/assets/"+id+"/backdrop", nil)
+	req304.Header.Set("x-api-key", env.apiKey)
+	req304.Header.Set("If-None-Match", etag)
+	rec304 := httptest.NewRecorder()
+	env.httpHandler.ServeHTTP(rec304, req304)
+	if rec304.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 Not Modified for matching backdrop ETag, got %d", rec304.Code)
+	}
+
+	backImg, err := jpeg.Decode(bytes.NewReader(rawBackdrop))
+	if err != nil {
+		t.Fatalf("decode backdrop jpeg: %v", err)
+	}
+	if backImg.Bounds().Dx() != 360 || backImg.Bounds().Dy() != 640 {
+		t.Fatalf("expected 360x640 downscaled portrait backdrop, got %dx%d", backImg.Bounds().Dx(), backImg.Bounds().Dy())
+	}
+
+	pixelRGB8 := func(x, y int) (int, int, int) {
+		r, g, b, _ := backImg.At(x, y).RGBA()
+		return int(r >> 8), int(g >> 8), int(b >> 8)
+	}
+
+	// Far-left region: source R=240 darkened by ~35% (*0.65 => ~156)
+	leftR, _, leftB := pixelRGB8(40, 320)
+	if leftR < 135 || leftR > 175 || leftR <= leftB {
+		t.Fatalf("expected ~35%% darkened warm pixel on left (R ~156 > B), got R=%d B=%d", leftR, leftB)
+	}
+	// Far-right region: source B=220 darkened by ~35% (*0.65 => ~143)
+	rightR, _, rightB := pixelRGB8(320, 320)
+	if rightB < 120 || rightB > 165 || rightB <= rightR {
+		t.Fatalf("expected ~35%% darkened cool pixel on right (B ~143 > R), got R=%d B=%d", rightR, rightB)
+	}
+	// Center seam (x=180): blur must smoothly blend left & right rather than leaving a sharp step
+	seamLeftR, _, _ := pixelRGB8(175, 320)
+	seamMidR, _, _ := pixelRGB8(180, 320)
+	seamRightR, _, _ := pixelRGB8(185, 320)
+	if seamMidR < 55 || seamMidR > 115 {
+		t.Fatalf("expected blurred mid-seam R blend (~85), got %d", seamMidR)
+	}
+	if math.Abs(float64(seamLeftR-seamRightR)) > 70 {
+		t.Fatalf("expected blurred transition across seam (x=175 R=%d, x=185 R=%d)", seamLeftR, seamRightR)
+	}
+
+	// 3. Cache key isolation: full preview (/thumbnail) must NOT collide with /backdrop
+	thumbRec := env.doJSON(t, "GET", "/api/assets/"+id+"/thumbnail", nil, true)
+	if thumbRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for thumbnail, got %d", thumbRec.Code)
+	}
+	thumbImg, err := jpeg.Decode(bytes.NewReader(thumbRec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("decode thumbnail jpeg: %v", err)
+	}
+	if thumbImg.Bounds().Dx() != 1600 || thumbImg.Bounds().Dy() != 900 {
+		t.Fatalf("expected full 1600x900 thumbnail (distinct from 360x640 backdrop), got %dx%d",
+			thumbImg.Bounds().Dx(), thumbImg.Bounds().Dy())
+	}
+
+	// 4. Zero disk writes in CACHE_MODE=memory & served from RAM LRU even if source file is removed
+	if _, statErr := os.Stat(filepath.Join(env.dataDir, "cache")); !os.IsNotExist(statErr) {
+		entries, _ := os.ReadDir(filepath.Join(env.dataDir, "cache"))
+		if len(entries) > 0 {
+			t.Fatalf("expected zero disk cache files in memory mode, got %d entries", len(entries))
+		}
+	}
+	if err := os.Remove(fullPath); err != nil {
+		t.Fatal(err)
+	}
+	cachedBackRec := env.doJSON(t, "GET", "/api/assets/"+id+"/backdrop", nil, true)
+	if cachedBackRec.Code != http.StatusOK || !bytes.Equal(cachedBackRec.Body.Bytes(), rawBackdrop) {
+		t.Fatalf("expected cached backdrop from RAM LRU after source removal, got status=%d len=%d",
+			cachedBackRec.Code, cachedBackRec.Body.Len())
+	}
+}
