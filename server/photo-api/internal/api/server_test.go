@@ -791,18 +791,18 @@ func TestAssetBackdropEndpoint(t *testing.T) {
 		t.Fatalf("expected blurred transition across seam (x=175 R=%d, x=185 R=%d)", seamLeftR, seamRightR)
 	}
 
-	// 3. Cache key isolation: full preview (/thumbnail) must NOT collide with /backdrop
-	thumbRec := env.doJSON(t, "GET", "/api/assets/"+id+"/thumbnail", nil, true)
-	if thumbRec.Code != http.StatusOK {
-		t.Fatalf("expected 200 for thumbnail, got %d", thumbRec.Code)
+	// 3. Cache key isolation: full Preview (/thumbnail route) must NOT collide with /backdrop
+	previewRec := env.doJSON(t, "GET", "/api/assets/"+id+"/thumbnail", nil, true)
+	if previewRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for preview, got %d", previewRec.Code)
 	}
-	thumbImg, err := jpeg.Decode(bytes.NewReader(thumbRec.Body.Bytes()))
+	previewImg, err := jpeg.Decode(bytes.NewReader(previewRec.Body.Bytes()))
 	if err != nil {
-		t.Fatalf("decode thumbnail jpeg: %v", err)
+		t.Fatalf("decode preview jpeg: %v", err)
 	}
-	if thumbImg.Bounds().Dx() != 1600 || thumbImg.Bounds().Dy() != 900 {
-		t.Fatalf("expected full 1600x900 thumbnail (distinct from 360x640 backdrop), got %dx%d",
-			thumbImg.Bounds().Dx(), thumbImg.Bounds().Dy())
+	if previewImg.Bounds().Dx() != 1600 || previewImg.Bounds().Dy() != 900 {
+		t.Fatalf("expected full 1600x900 preview (distinct from 360x640 backdrop), got %dx%d",
+			previewImg.Bounds().Dx(), previewImg.Bounds().Dy())
 	}
 
 	// 4. Zero disk writes in CACHE_MODE=memory & served from RAM LRU even if source file is removed

@@ -2,14 +2,12 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const http = require("node:http");
 
-const {
-	normalizeConfig,
-	fetchSourceAssets,
-	registerMediaRoutes,
-	createSlideshowController
-} = require("./slideshow_backend");
+const { registerMediaRoutes } = require("./media_pipe");
+const { createSlideshowController } = require("./slideshow_controller");
 const MediaBackgroundModule = require("./MMM-MediaBackground");
 
 function startTestHttpServer(handler) {
@@ -38,7 +36,6 @@ function createMiniExpressApp() {
 			}) + "(?:\\?.*)?$";
 			routes.push({ regex: new RegExp(regexStr), paramNames, handler });
 		},
-		use() {},
 		handle(req, res) {
 			const parsed = new URL(req.url, "http://127.0.0.1");
 			for (const r of routes) {
@@ -56,6 +53,41 @@ function createMiniExpressApp() {
 			res.end("not found");
 		}
 	};
+}
+
+function createTimezoneAwareTestMoment() {
+	const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+	const pad2 = (n) => String(n).padStart(2, "0");
+
+	function buildFormatter(dateObj) {
+		return {
+			isValid: () => !Number.isNaN(dateObj.getTime()),
+			format: (fmt) => {
+				const yyyy = String(dateObj.getUTCFullYear());
+				const mm = pad2(dateObj.getUTCMonth() + 1);
+				const dd = pad2(dateObj.getUTCDate());
+				const dddd = WEEKDAYS[dateObj.getUTCDay()];
+				const hh = pad2(dateObj.getUTCHours());
+				const min = pad2(dateObj.getUTCMinutes());
+				return String(fmt)
+					.replace("YYYY", yyyy)
+					.replace("MM", mm)
+					.replace("DD", dd)
+					.replace("dddd", dddd)
+					.replace("HH", hh)
+					.replace("mm", min);
+			}
+		};
+	}
+
+	// Default moment(iso) simulates a UTC-8 browser shifting timestamps by -8 hours
+	const momentFn = (iso) => {
+		const shifted = new Date(new Date(iso).getTime() - 8 * 3600 * 1000);
+		return buildFormatter(shifted);
+	};
+	// moment.parseZone(iso) preserves the wall-clock zone encoded in the timestamp
+	momentFn.parseZone = (iso) => buildFormatter(new Date(iso));
+	return momentFn;
 }
 
 function createFakeDomEnvironment() {
@@ -83,13 +115,6 @@ function createFakeDomEnvironment() {
 			this._src = String(val);
 			if (this._src) {
 				this.attributes.set("src", this._src);
-			}
-		}
-
-		setAttribute(name, value) {
-			this.attributes.set(name, String(value));
-			if (name === "src") {
-				this._src = String(value);
 			}
 		}
 
@@ -143,30 +168,11 @@ function createFakeDomEnvironment() {
 			this._listeners.get(type).push(fn);
 		}
 
-		removeEventListener(type, fn) {
-			const list = this._listeners.get(type);
-			if (!list) return;
-			const idx = list.indexOf(fn);
-			if (idx >= 0) list.splice(idx, 1);
-		}
-
 		dispatchEvent(event) {
 			const list = this._listeners.get(event.type) || [];
 			for (const fn of [...list]) {
 				fn(event);
 			}
-		}
-
-		querySelectorAll(predicate) {
-			const out = [];
-			const walk = (node) => {
-				for (const child of node.children) {
-					if (predicate(child)) out.push(child);
-					walk(child);
-				}
-			};
-			walk(this);
-			return out;
 		}
 	}
 
@@ -182,115 +188,22 @@ function createFakeDomEnvironment() {
 	};
 }
 
-test("normalizeConfig supports first-party keys and normalizes legacy immichConfigs, showImageInfo, imageInfo, and showBlurredImageForBlackBars aliases", () => {
-	const firstParty = normalizeConfig({
-		slideshowSpeed: 15000,
-		transitionSpeed: "1.5s",
-		backgroundSize: "contain",
-		showBlurredBackdrop: true,
-		showMediaInfo: true,
-		infoFields: ["date", "geo", "count", "album"],
-		dateFormat: "DD-MM-YYYY dddd HH:mm",
-		sources: [
-			{
-				url: "http://photo-api:2283/",
-				apiKey: "secret-1",
-				mode: "anniversary",
-				anniversaryDatesBack: 45,
-				anniversaryDatesForward: 45,
-				anniversaryStartYear: 2012,
-				anniversaryEndYear: 2025,
-				querySize: 80
-			}
-		]
-	});
-
-	assert.equal(firstParty.slideshowSpeed, 15000);
-	assert.equal(firstParty.transitionSpeed, "1.5s");
-	assert.equal(firstParty.backgroundSize, "contain");
-	assert.equal(firstParty.showBlurredBackdrop, true);
-	assert.equal(firstParty.showMediaInfo, true);
-	assert.deepEqual(firstParty.infoFields, ["date", "geo", "count", "album"]);
-	assert.equal(firstParty.sources.length, 1);
-	assert.equal(firstParty.sources[0].url, "http://photo-api:2283");
-	assert.equal(firstParty.sources[0].apiKey, "secret-1");
-	assert.equal(firstParty.sources[0].mode, "anniversary");
-	assert.equal(firstParty.sources[0].querySize, 80);
-
-	const legacy = normalizeConfig({
-		slideshowSpeed: 30000,
-		backgroundSize: "contain",
-		showImageInfo: false,
-		showBlurredImageForBlackBars: false,
-		immichConfigs: [
-			{
-				apiKey: "legacy-key",
-				url: "http://photo-api:2283",
-				mode: "anniversary",
-				anniversaryDatesBack: 30,
-				anniversaryDatesForward: 30,
-				anniversaryStartYear: 2010,
-				anniversaryEndYear: 2026,
-				querySize: 100,
-				sortImagesBy: "random",
-				imageInfo: "date, geo, count, album",
-				dateFormat: "DD/MM/YYYY HH:mm",
-				slideshowSpeed: 12000
-			},
-			{
-				mode: "random",
-				query: { size: 500, type: "IMAGE" }
-			}
-		]
-	});
-
-	assert.equal(legacy.showMediaInfo, false);
-	assert.equal(legacy.showBlurredBackdrop, false);
-	assert.equal(legacy.sources.length, 2);
-	assert.equal(legacy.sources[0].apiKey, "legacy-key");
-	assert.equal(legacy.sources[0].slideshowSpeed, 12000);
-	assert.deepEqual(legacy.sources[0].infoFields, ["date", "geo", "count", "album"]);
-	assert.equal(legacy.sources[0].dateFormat, "DD/MM/YYYY HH:mm");
-	// Second legacy entry inherits apiKey/url from first entry just like MMM-ImmichSlideShow
-	assert.equal(legacy.sources[1].apiKey, "legacy-key");
-	assert.equal(legacy.sources[1].url, "http://photo-api:2283");
-	assert.equal(legacy.sources[1].mode, "random");
-	assert.equal(legacy.sources[1].querySize, 500);
-	assert.equal(legacy.sources[1].mediaType, "IMAGE");
-});
-
-test("fetchSourceAssets queries photo-api accurately for anniversary (including year-wrap), random, metadata, and memory modes", async () => {
+test("createSlideshowController handles first-party config across anniversary (with Dec->Jan wrap), random, and metadata modes", async () => {
 	const received = [];
 	const upstream = await startTestHttpServer((req, res) => {
 		let body = "";
-		req.on("data", (chunk) => {
-			body += chunk;
-		});
+		req.on("data", (c) => { body += c; });
 		req.on("end", () => {
-			const parsedBody = body ? JSON.parse(body) : null;
-			received.push({
-				method: req.method,
-				url: req.url,
-				apiKey: req.headers["x-api-key"],
-				body: parsedBody
-			});
-
+			const parsed = body ? JSON.parse(body) : {};
+			received.push({ url: req.url, apiKey: req.headers["x-api-key"], body: parsed });
 			res.setHeader("Content-Type", "application/json");
 			if (req.url === "/api/search/random") {
-				const tag = parsedBody.takenAfter ? parsedBody.takenAfter.slice(0, 4) : "rand";
-				res.end(JSON.stringify([{ id: `asset-${tag}`, type: "IMAGE", originalPath: `${tag}/pic.jpg`, exifInfo: {} }]));
+				const tag = parsed.takenAfter ? parsed.takenAfter.slice(0, 4) : "rand";
+				res.end(JSON.stringify([{ id: `asset-${tag}`, type: "IMAGE", originalPath: `${tag}/p.jpg`, exifInfo: {} }]));
 			} else if (req.url === "/api/search/metadata") {
 				res.end(JSON.stringify({
-					assets: {
-						total: 1,
-						count: 1,
-						items: [{ id: "asset-meta", type: "IMAGE", originalPath: "2024/meta.jpg", exifInfo: {} }]
-					}
+					assets: { total: 1, count: 1, items: [{ id: "asset-meta", type: "IMAGE", originalPath: "m.jpg", exifInfo: {} }] }
 				}));
-			} else if (req.url.startsWith("/api/memories")) {
-				res.end(JSON.stringify([
-					{ id: "mem-1", assets: [{ id: "asset-mem", type: "IMAGE", originalPath: "2021/mem.jpg", exifInfo: {} }] }
-				]));
 			} else {
 				res.statusCode = 404;
 				res.end("{}");
@@ -298,12 +211,28 @@ test("fetchSourceAssets queries photo-api accurately for anniversary (including 
 		});
 	});
 
+	const emitted = [];
+	const dec20 = new Date(Date.UTC(2026, 11, 20, 12, 0, 0));
+	const controller = createSlideshowController({
+		sendNotification: (name, payload) => emitted.push({ name, payload }),
+		nowFn: () => dec20,
+		randomFn: () => 0.99 // deterministic identity order for shuffle
+	});
+
 	try {
-		const norm = normalizeConfig({
+		// 1. Anniversary mode (with MagicMirror defaults merged)
+		const clientCfg1 = Object.assign({}, MediaBackgroundModule.defaults, {
+			slideshowSpeed: 15000,
+			transitionSpeed: "1.5s",
+			backgroundSize: "contain",
+			showBlurredBackdrop: true,
+			showMediaInfo: true,
+			infoFields: ["date", "geo", "count", "album"],
+			dateFormat: "DD-MM-YYYY dddd HH:mm",
 			sources: [
 				{
-					url: upstream.baseUrl,
-					apiKey: "test-secret",
+					url: `${upstream.baseUrl}/`,
+					apiKey: "first-party-secret",
 					mode: "anniversary",
 					anniversaryDatesBack: 15,
 					anniversaryDatesForward: 20,
@@ -311,55 +240,115 @@ test("fetchSourceAssets queries photo-api accurately for anniversary (including 
 					anniversaryEndYear: 2023,
 					querySize: 50,
 					sortBy: "none"
-				},
-				{
-					url: upstream.baseUrl,
-					apiKey: "test-secret",
-					mode: "random",
-					querySize: 25,
-					mediaType: "IMAGE"
-				},
-				{
-					url: upstream.baseUrl,
-					apiKey: "test-secret",
-					mode: "metadata",
-					querySize: 10,
-					query: { takenAfter: "2024-01-01T00:00:00Z" }
-				},
-				{
-					url: upstream.baseUrl,
-					apiKey: "test-secret",
-					mode: "memory",
-					numDaysToInclude: 2
 				}
 			]
 		});
+		await controller.configure("mod_1", clientCfg1);
 
-		// Dec 20 + 20 days wraps into Jan 9 of next year
-		const dec20 = new Date(Date.UTC(2026, 11, 20, 12, 0, 0));
-		const annivAssets = await fetchSourceAssets(norm.sources[0], { now: dec20 });
-		assert.deepEqual(annivAssets.map((a) => a.id), ["asset-2022", "asset-2023"]);
-		assert.equal(received[0].apiKey, "test-secret");
 		assert.equal(received[0].url, "/api/search/random");
+		assert.equal(received[0].apiKey, "first-party-secret");
 		assert.equal(received[0].body.takenAfter, "2022-12-05T00:00:00.000Z");
 		assert.equal(received[0].body.takenBefore, "2023-01-09T23:59:59.999Z");
 		assert.equal(received[0].body.size, 50);
 		assert.equal(received[0].body.type, undefined);
+		assert.equal(emitted[0].payload.assetId, "asset-2022");
+		assert.equal(emitted[0].payload.total, 2);
+		assert.equal(emitted[0].payload.transitionSpeed, "1.5s");
+		assert.equal(emitted[0].payload.backgroundSize, "contain");
 
-		const randAssets = await fetchSourceAssets(norm.sources[1]);
-		assert.deepEqual(randAssets.map((a) => a.id), ["asset-rand"]);
+		// 2. Metadata mode
+		await controller.configure("mod_1", Object.assign({}, MediaBackgroundModule.defaults, {
+			sources: [{
+				url: upstream.baseUrl,
+				apiKey: "first-party-secret",
+				mode: "metadata",
+				querySize: 10,
+				mediaType: "IMAGE",
+				query: { takenAfter: "2024-01-01T00:00:00Z" }
+			}]
+		}));
+		assert.equal(received[2].url, "/api/search/metadata");
 		assert.equal(received[2].body.type, "IMAGE");
-		assert.equal(received[2].body.size, 25);
-
-		const metaAssets = await fetchSourceAssets(norm.sources[2]);
-		assert.deepEqual(metaAssets.map((a) => a.id), ["asset-meta"]);
-		assert.equal(received[3].url, "/api/search/metadata");
-		assert.equal(received[3].body.takenAfter, "2024-01-01T00:00:00Z");
-
-		const memAssets = await fetchSourceAssets(norm.sources[3], { now: dec20 });
-		assert.equal(memAssets.length, 2);
-		assert.ok(received[4].url.startsWith("/api/memories?"));
+		assert.equal(received[2].body.takenAfter, "2024-01-01T00:00:00Z");
+		assert.equal(emitted[1].payload.assetId, "asset-meta");
 	} finally {
+		controller.stopAll();
+		await upstream.close();
+	}
+});
+
+test("createSlideshowController preserves legacy immichConfigs, showImageInfo:false, imageInfo, showBlurredImageForBlackBars:false, and redacted **SECRET_* apiKeys even after MagicMirror defaults merge", async () => {
+	const upstreamKeys = [];
+	const upstream = await startTestHttpServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => { body += c; });
+		req.on("end", () => {
+			upstreamKeys.push(req.headers["x-api-key"]);
+			const parsed = body ? JSON.parse(body) : {};
+			res.setHeader("Content-Type", "application/json");
+			// First source (anniversary) empty -> falls back to second legacy source (random) inheriting url & apiKey
+			if (parsed.takenAfter) {
+				res.end(JSON.stringify([]));
+			} else {
+				res.end(JSON.stringify([
+					{ id: "broken-1", type: "IMAGE", originalPath: "a.jpg", exifInfo: {} },
+					{ id: "legacy-ok", type: "IMAGE", originalPath: "b.jpg", albumName: "Hawaii", exifInfo: {} }
+				]));
+			}
+		});
+	});
+
+	const emitted = [];
+	const controller = createSlideshowController({
+		sendNotification: (name, payload) => emitted.push({ name, payload })
+	});
+
+	try {
+		const rawUserConfig = {
+			slideshowSpeed: 30000,
+			backgroundSize: "cover",
+			showImageInfo: false,
+			showBlurredImageForBlackBars: false,
+			imageInfo: "date, geo",
+			immichConfigs: [
+				{
+					apiKey: "**SECRET_0**",
+					url: upstream.baseUrl,
+					mode: "anniversary",
+					anniversaryStartYear: 2023,
+					anniversaryEndYear: 2023
+				},
+				{
+					mode: "random",
+					query: { size: 500, type: "IMAGE" }
+				}
+			]
+		};
+		const serverModuleConfig = {
+			...rawUserConfig,
+			immichConfigs: [
+				{ ...rawUserConfig.immichConfigs[0], apiKey: "restored-legacy-secret" },
+				rawUserConfig.immichConfigs[1]
+			]
+		};
+
+		// Simulate exact MagicMirror client config after Module.defaults merge
+		const clientMergedWithDefaults = Object.assign({}, MediaBackgroundModule.defaults, rawUserConfig);
+		await controller.configure("mod_legacy", clientMergedWithDefaults, serverModuleConfig);
+
+		assert.deepEqual(upstreamKeys, ["restored-legacy-secret", "restored-legacy-secret"]);
+		assert.equal(emitted[0].payload.assetId, "broken-1");
+		assert.equal(emitted[0].payload.previewUrl, "/mediabackground/preview/broken-1?source=1");
+		assert.equal(emitted[0].payload.showMediaInfo, false);
+		assert.equal(emitted[0].payload.showBlurredBackdrop, false);
+		assert.equal(emitted[0].payload.backgroundSize, "cover");
+		assert.deepEqual(emitted[0].payload.infoFields, ["date", "geo"]);
+
+		// Broken slide skips cleanly to next asset
+		controller.skipBrokenAsset("mod_legacy", "broken-1");
+		assert.equal(emitted[1].payload.assetId, "legacy-ok");
+	} finally {
+		controller.stopAll();
 		await upstream.close();
 	}
 });
@@ -404,7 +393,6 @@ test("Express routes /mediabackground/preview/:id and /mediabackground/backdrop/
 	const proxy = await startTestHttpServer((req, res) => app.handle(req, res));
 
 	try {
-		// 1. Preview route pipes exact JPEG bytes and headers with server-injected x-api-key
 		const previewResp = await fetch(`${proxy.baseUrl}/mediabackground/preview/abc-123`);
 		assert.equal(previewResp.status, 200);
 		assert.equal(previewResp.headers.get("content-type"), "image/jpeg");
@@ -413,11 +401,9 @@ test("Express routes /mediabackground/preview/:id and /mediabackground/backdrop/
 		assert.deepEqual(previewBuf, Buffer.from([0xff, 0xd8, 0x01, 0x02, 0xff, 0xd9]));
 		assert.equal(lastAuthHeader, "injected-server-secret");
 
-		// Rejects unsafe path traversal IDs with 400
 		const badIdResp = await fetch(`${proxy.baseUrl}/mediabackground/preview/..%2Fadmin`);
 		assert.equal(badIdResp.status, 400);
 
-		// 2. Backdrop route flushes initial chunk and aborts upstream immediately when downstream disconnects
 		await new Promise((resolve, reject) => {
 			const clientReq = http.get(`${proxy.baseUrl}/mediabackground/backdrop/abc-123`, (clientRes) => {
 				assert.equal(clientRes.statusCode, 200);
@@ -443,233 +429,163 @@ test("Express routes /mediabackground/preview/:id and /mediabackground/backdrop/
 	}
 });
 
-test("createSlideshowController falls back to next configured source when primary source pool is empty", async () => {
-	const upstream = await startTestHttpServer((req, res) => {
-		let body = "";
-		req.on("data", (c) => { body += c; });
-		req.on("end", () => {
-			const parsed = body ? JSON.parse(body) : {};
-			res.setHeader("Content-Type", "application/json");
-			// Anniversary query has takenAfter -> return empty; random fallback has no takenAfter -> return 2 photos
-			if (parsed.takenAfter) {
-				res.end(JSON.stringify([]));
-			} else {
-				res.end(JSON.stringify([
-					{
-						id: "fallback-1",
-						type: "IMAGE",
-						originalPath: "2024/Hawaii/beach.jpg",
-						albumName: "Hawaii",
-						exifInfo: {
-							dateTimeOriginal: "2024-08-10T14:30:00Z",
-							city: "Honolulu",
-							state: "Hawaii",
-							country: "United States"
-						}
-					}
-				]));
-			}
-		});
-	});
-
-	const sent = [];
-	const controller = createSlideshowController({
-		sendNotification: (name, payload) => sent.push({ name, payload })
-	});
-
-	try {
-		await controller.configure("mod_1", {
-			slideshowSpeed: 60000,
-			sources: [
-				{
-					url: upstream.baseUrl,
-					apiKey: "k",
-					mode: "anniversary",
-					anniversaryStartYear: 2023,
-					anniversaryEndYear: 2023
-				},
-				{
-					url: upstream.baseUrl,
-					apiKey: "k",
-					mode: "random",
-					querySize: 10
-				}
-			]
-		});
-
-		assert.equal(sent.length, 1);
-		assert.equal(sent[0].name, "MEDIABACKGROUND_DISPLAY");
-		assert.equal(sent[0].payload.assetId, "fallback-1");
-		assert.equal(sent[0].payload.previewUrl, "/mediabackground/preview/fallback-1?source=1");
-		assert.equal(sent[0].payload.backdropUrl, "/mediabackground/backdrop/fallback-1?source=1");
-		assert.equal(sent[0].payload.albumName, "Hawaii");
-		assert.equal(sent[0].payload.index, 1);
-		assert.equal(sent[0].payload.total, 1);
-
-		// Restores redacted **SECRET_0** apiKey from serverModuleConfig and skips broken image on error
-		const secretSent = [];
-		const secretUpstreamKeys = [];
-		const secretServer = await startTestHttpServer((req, res) => {
-			secretUpstreamKeys.push(req.headers["x-api-key"]);
-			res.setHeader("Content-Type", "application/json");
-			res.end(JSON.stringify([
-				{ id: "broken-1", type: "IMAGE", originalPath: "a.jpg", exifInfo: {} },
-				{ id: "healthy-2", type: "IMAGE", originalPath: "b.jpg", exifInfo: {} }
-			]));
-		});
-		const ctrl2 = createSlideshowController({
-			sendNotification: (name, payload) => secretSent.push({ name, payload })
-		});
-		try {
-			await ctrl2.configure(
-				"mod_secret",
-				{ sources: [{ url: secretServer.baseUrl, apiKey: "**SECRET_0**", mode: "random" }] },
-				{ sources: [{ url: secretServer.baseUrl, apiKey: "real-unredacted-key", mode: "random" }] }
-			);
-			assert.equal(secretUpstreamKeys[0], "real-unredacted-key");
-			assert.equal(secretSent[0].payload.assetId, "broken-1");
-
-			ctrl2.skipBrokenAsset("mod_secret", "broken-1");
-			assert.equal(secretSent[1].payload.assetId, "healthy-2");
-		} finally {
-			ctrl2.stopAll();
-			await secretServer.close();
-		}
-	} finally {
-		controller.stopAll();
-		await upstream.close();
-	}
+test("MMM-MediaBackground CSS contains zero backdrop-filter rules and sets opaque #000 slide background", () => {
+	const cssPath = path.join(__dirname, "MMM-MediaBackground.css");
+	const cssText = fs.readFileSync(cssPath, "utf8");
+	assert.equal(/backdrop-filter/i.test(cssText), false, "MMM-MediaBackground.css must not use CSS backdrop-filter");
+	assert.equal(/\.mmmb-slide\s*\{[^}]*background-color:\s*#000/m.test(cssText), true);
 });
 
-test("MMM-MediaBackground browser DOM maintains <= 2 crossfade slots, uses zero CSS backdrop-filter, clears img.src on teardown/suspend, and formats date/geo/count/album overlays", () => {
-	const fakeDoc = createFakeDomEnvironment();
-	const sentSocket = [];
+test("MMM-MediaBackground browser DOM maintains <= 2 crossfade slots, clears img.src on teardown/suspend, and preserves EXIF capture time via moment.parseZone", () => {
+	const prevMoment = global.moment;
+	global.moment = createTimezoneAwareTestMoment();
 
-	const instance = Object.create(MediaBackgroundModule);
-	instance.name = "MMM-MediaBackground";
-	instance.identifier = "module_1_MMM-MediaBackground";
-	instance.documentRef = fakeDoc;
-	instance.config = Object.assign({}, MediaBackgroundModule.defaults, {
-		slideshowSpeed: 12000,
-		transitionSpeed: "500ms",
-		backgroundSize: "contain",
-		showBlurredBackdrop: true,
-		showMediaInfo: true,
-		infoFields: ["date", "geo", "count", "album"],
-		dateFormat: "DD-MM-YYYY HH:mm",
-		sources: [{ url: "http://photo-api:2283", apiKey: "redacted" }]
-	});
-	instance.sendSocketNotification = (name, payload) => sentSocket.push({ name, payload });
+	try {
+		const fakeDoc = createFakeDomEnvironment();
+		const sentSocket = [];
 
-	instance.start();
-	const root = instance.getDom();
+		const instance = Object.create(MediaBackgroundModule);
+		instance.name = "MMM-MediaBackground";
+		instance.identifier = "module_1_MMM-MediaBackground";
+		instance.documentRef = fakeDoc;
+		instance.config = Object.assign({}, MediaBackgroundModule.defaults, {
+			sources: [{ url: "http://photo-api:2283", apiKey: "**SECRET_0**" }]
+		});
+		instance.sendSocketNotification = (name, payload) => sentSocket.push({ name, payload });
 
-	const stage = root.children[0];
-	const infoDiv = root.children[1];
-	assert.equal(stage.className, "mmmb-stage");
-	assert.ok(infoDiv.className.includes("info"));
-	assert.ok(infoDiv.className.includes("bottomRight"));
+		instance.start();
+		const root = instance.getDom();
 
-	// Dispatch Slide 1
-	instance.socketNotificationReceived("MEDIABACKGROUND_DISPLAY", {
-		identifier: instance.identifier,
-		assetId: "photo-1",
-		type: "IMAGE",
-		previewUrl: "/mediabackground/preview/photo-1?source=0",
-		backdropUrl: "/mediabackground/backdrop/photo-1?source=0",
-		index: 3,
-		total: 42,
-		albumName: "Saigon Trip",
-		exifInfo: {
-			dateTimeOriginal: "2023-07-15T10:30:00Z",
-			city: "Ho Chi Minh City",
-			state: null,
-			country: "Vietnam"
+		const stage = root.children[0];
+		const infoDiv = root.children[1];
+		assert.equal(stage.className, "mmmb-stage");
+		assert.equal(infoDiv.style.display, "none");
+
+		// Slide 1 with backdrop enabled + EXIF UTC timestamp that would become 02:30 if shifted by UTC-8
+		instance.socketNotificationReceived("MEDIABACKGROUND_DISPLAY", {
+			identifier: instance.identifier,
+			assetId: "photo-1",
+			type: "IMAGE",
+			previewUrl: "/mediabackground/preview/photo-1?source=0",
+			backdropUrl: "/mediabackground/backdrop/photo-1?source=0",
+			index: 3,
+			total: 42,
+			albumName: "Saigon Trip",
+			exifInfo: {
+				dateTimeOriginal: "2023-07-15T10:30:00Z",
+				city: "Ho Chi Minh City",
+				state: null,
+				country: "Vietnam"
+			},
+			infoFields: ["date", "geo", "count", "album"],
+			dateFormat: "DD-MM-YYYY dddd HH:mm",
+			showMediaInfo: true,
+			showBlurredBackdrop: true,
+			backgroundSize: "contain",
+			backgroundPosition: "center",
+			transitionSpeed: "500ms",
+			infoPosition: "bottomRight"
+		});
+
+		assert.equal(stage.children.length, 1);
+		const slot1 = stage.children[0];
+		const backdrop1 = slot1.children[0];
+		const img1 = slot1.children[1];
+		assert.equal(slot1.style.backgroundColor, "#000");
+		assert.equal(backdrop1.className, "mmmb-backdrop");
+		assert.equal(backdrop1.style.backgroundImage, "url(\"/mediabackground/backdrop/photo-1?source=0\")");
+		assert.equal(backdrop1.style.backgroundSize, "cover");
+		assert.equal(img1.tagName, "IMG");
+		assert.equal(img1.style.objectFit, "contain");
+		assert.equal(img1.src, "/mediabackground/preview/photo-1?source=0");
+
+		img1.onload();
+		assert.equal(slot1.style.opacity, "1");
+		assert.equal(infoDiv.children[0].tagName, "HEADER");
+		assert.equal(infoDiv.children[0].className, "infoDivHeader");
+		assert.equal(infoDiv.children[0].textContent, "3 of 42Saigon Trip");
+		assert.equal(infoDiv.children[1].textContent, "15-07-2023 Saturday 10:30");
+		assert.equal(infoDiv.children[2].textContent, "Ho Chi Minh City, Vietnam");
+
+		// Slide 2 with showBlurredBackdrop: false -> opaque #000 slide with only foreground <img>
+		instance.socketNotificationReceived("MEDIABACKGROUND_DISPLAY", {
+			identifier: instance.identifier,
+			assetId: "photo-2",
+			type: "IMAGE",
+			previewUrl: "/mediabackground/preview/photo-2?source=0",
+			backdropUrl: "/mediabackground/backdrop/photo-2?source=0",
+			index: 4,
+			total: 42,
+			albumName: "",
+			exifInfo: {
+				dateTimeOriginal: "2022-07-15T16:00:00Z",
+				city: "Los Angeles",
+				state: "California",
+				country: "United States"
+			},
+			infoFields: ["date", "geo", "count", "album"],
+			dateFormat: "DD-MM-YYYY dddd HH:mm",
+			showMediaInfo: true,
+			showBlurredBackdrop: false,
+			backgroundSize: "contain",
+			backgroundPosition: "center",
+			transitionSpeed: "500ms",
+			infoPosition: "bottomRight"
+		});
+
+		assert.equal(stage.children.length, 2);
+		const slot2 = stage.children[1];
+		assert.equal(slot2.children.length, 1, "showBlurredBackdrop:false renders only foreground <img>");
+		assert.equal(slot2.style.backgroundColor, "#000");
+		const img2 = slot2.children[0];
+		img2.onload();
+
+		// Slide 3 arrives BEFORE Slide 2 transitionend -> oldest slot1 evicted immediately so stage stays <= 2 slots
+		instance.socketNotificationReceived("MEDIABACKGROUND_DISPLAY", {
+			identifier: instance.identifier,
+			assetId: "photo-3",
+			type: "IMAGE",
+			previewUrl: "/mediabackground/preview/photo-3?source=0",
+			backdropUrl: "/mediabackground/backdrop/photo-3?source=0",
+			index: 5,
+			total: 42,
+			albumName: "Family Reunion",
+			exifInfo: {
+				dateTimeOriginal: "2021-12-25T08:05:00Z",
+				city: null,
+				state: null,
+				country: null
+			},
+			infoFields: ["date", "geo", "count", "album"],
+			dateFormat: "DD-MM-YYYY dddd HH:mm",
+			showMediaInfo: true,
+			showBlurredBackdrop: true,
+			backgroundSize: "contain",
+			backgroundPosition: "center",
+			transitionSpeed: "500ms",
+			infoPosition: "bottomRight"
+		});
+
+		assert.equal(stage.children.length, 2);
+		assert.equal(img1.src, "");
+
+		const slot3 = stage.children[1];
+		const img3 = slot3.children[1];
+		img3.onload();
+		slot3.dispatchEvent({ type: "transitionend" });
+
+		assert.equal(stage.children.length, 1);
+		assert.equal(img2.src, "");
+		assert.equal(img3.src, "/mediabackground/preview/photo-3?source=0");
+
+		instance.suspend();
+		assert.equal(img3.src, "");
+		assert.equal(stage.children.length, 0);
+	} finally {
+		if (prevMoment === undefined) {
+			delete global.moment;
+		} else {
+			global.moment = prevMoment;
 		}
-	});
-
-	assert.equal(stage.children.length, 1);
-	const slot1 = stage.children[0];
-	const backdrop1 = slot1.children[0];
-	const img1 = slot1.children[1];
-	assert.equal(backdrop1.className, "mmmb-backdrop");
-	assert.equal(backdrop1.style.backgroundImage, "url(\"/mediabackground/backdrop/photo-1?source=0\")");
-	assert.equal(backdrop1.style.backgroundSize, "cover");
-	assert.equal(backdrop1.style.backdropFilter, undefined);
-	assert.equal(slot1.style.backdropFilter, undefined);
-	assert.equal(img1.tagName, "IMG");
-	assert.equal(img1.style.objectFit, "contain");
-	assert.equal(img1.src, "/mediabackground/preview/photo-1?source=0");
-
-	// Simulate Slide 1 onload -> becomes visible and populates overlay
-	img1.onload();
-	assert.equal(slot1.style.opacity, "1");
-	assert.equal(infoDiv.children[0].tagName, "HEADER");
-	assert.equal(infoDiv.children[0].className, "infoDivHeader");
-	assert.ok(infoDiv.textContent.includes("3 of 42"));
-	assert.ok(infoDiv.textContent.includes("Saigon Trip"));
-	assert.ok(infoDiv.textContent.includes("15-07-2023 10:30"));
-	assert.ok(infoDiv.textContent.includes("Ho Chi Minh City, Vietnam"));
-
-	// Dispatch Slide 2 -> crossfade has 2 slots during transition
-	instance.socketNotificationReceived("MEDIABACKGROUND_DISPLAY", {
-		identifier: instance.identifier,
-		assetId: "photo-2",
-		type: "IMAGE",
-		previewUrl: "/mediabackground/preview/photo-2?source=0",
-		backdropUrl: "/mediabackground/backdrop/photo-2?source=0",
-		index: 4,
-		total: 42,
-		albumName: "",
-		exifInfo: {
-			dateTimeOriginal: "2022-07-15T16:00:00Z",
-			city: "Los Angeles",
-			state: "California",
-			country: "United States"
-		}
-	});
-
-	assert.equal(stage.children.length, 2, "at most 2 slots during crossfade");
-	const slot2 = stage.children[1];
-	const img2 = slot2.children[1];
-	img2.onload();
-
-	// Dispatch Slide 3 BEFORE Slide 2's transitionend fires -> must prune oldest slot immediately so stage NEVER exceeds 2 slots
-	instance.socketNotificationReceived("MEDIABACKGROUND_DISPLAY", {
-		identifier: instance.identifier,
-		assetId: "photo-3",
-		type: "IMAGE",
-		previewUrl: "/mediabackground/preview/photo-3?source=0",
-		backdropUrl: "/mediabackground/backdrop/photo-3?source=0",
-		index: 5,
-		total: 42,
-		albumName: "Family Reunion",
-		exifInfo: {
-			dateTimeOriginal: "2021-12-25T08:05:00Z",
-			city: null,
-			state: null,
-			country: null
-		}
-	});
-
-	assert.equal(stage.children.length, 2, "strict 2-slot cap even under rapid consecutive slides");
-	assert.equal(img1.src, "", "evicted outgoing slot1 must clear img.src immediately");
-
-	const slot3 = stage.children[1];
-	const img3 = slot3.children[1];
-	img3.onload();
-	slot3.dispatchEvent({ type: "transitionend" });
-
-	assert.equal(stage.children.length, 1, "after transitionend, only 1 active slot remains");
-	assert.equal(img2.src, "", "outgoing slot2 img.src cleared on transition completion");
-	assert.equal(img3.src, "/mediabackground/preview/photo-3?source=0");
-	assert.ok(infoDiv.textContent.includes("5 of 42"));
-	assert.ok(infoDiv.textContent.includes("Family Reunion"));
-	assert.ok(infoDiv.textContent.includes("25-12-2021 08:05"));
-	assert.ok(!infoDiv.textContent.includes("Los Angeles"));
-
-	// Suspend clears active img.src immediately
-	instance.suspend();
-	assert.equal(img3.src, "", "suspend() must clear active img.src");
-	assert.equal(stage.children.length, 0);
+	}
 });

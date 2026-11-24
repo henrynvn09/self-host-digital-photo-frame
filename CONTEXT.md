@@ -22,6 +22,10 @@ _Avoid_: Sync, crawl, import, ingest
 A display-ready rendition generated on demand from an asset—a rotated still image for a photo, or a silent, 30 fps, duration-capped clip for a video—held in a bounded cache for fast playback.
 _Avoid_: Thumbnail, resized image, transcoded file, variant
 
+**Backdrop**:
+A compact, pre-blurred, darkened still rendition generated on demand from an asset and held in the bounded cache to fill fullscreen letterbox regions without client-side blur shaders.
+_Avoid_: Blurred thumbnail, CSS blur layer, background variant
+
 **Album**:
 A human-readable event or trip label derived from an asset's immediate parent directory name, omitted when that directory name is purely numeric.
 _Avoid_: Folder, collection, category, tag

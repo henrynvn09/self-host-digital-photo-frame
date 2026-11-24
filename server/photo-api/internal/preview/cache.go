@@ -199,41 +199,60 @@ func NewCache(dataDir string, opts Options) (*Cache, error) {
 	}, nil
 }
 
-func backdropCacheKey(assetID string) string {
-	return "backdrop:" + assetID
+type RenditionKind struct {
+	keyPrefix  string
+	etagPrefix string
+	fileSuffix string
+}
+
+var (
+	PreviewKind  = RenditionKind{keyPrefix: "", etagPrefix: "", fileSuffix: ".jpg"}
+	BackdropKind = RenditionKind{keyPrefix: "backdrop:", etagPrefix: "backdrop-", fileSuffix: ".backdrop.jpg"}
+)
+
+func (k RenditionKind) CacheKey(assetID string) string {
+	return k.keyPrefix + assetID
+}
+
+func (k RenditionKind) ETag(assetID string, mtime int64) string {
+	return fmt.Sprintf(`"%s%s-%d"`, k.etagPrefix, assetID, mtime)
+}
+
+func (k RenditionKind) Filename(assetID string) string {
+	return assetID + k.fileSuffix
 }
 
 func (c *Cache) cachePath(assetID string) string {
-	return c.cacheFilePath(assetID, ".jpg")
+	return c.kindPath(assetID, PreviewKind)
 }
 
 func (c *Cache) backdropCachePath(assetID string) string {
-	return c.cacheFilePath(assetID, ".backdrop.jpg")
+	return c.kindPath(assetID, BackdropKind)
 }
 
-func (c *Cache) cacheFilePath(assetID, suffix string) string {
+func (c *Cache) kindPath(assetID string, kind RenditionKind) string {
 	prefix := "00"
 	if len(assetID) >= 2 {
 		prefix = assetID[:2]
 	}
-	return filepath.Join(c.cacheDir, prefix, assetID+suffix)
+	return filepath.Join(c.cacheDir, prefix, kind.Filename(assetID))
 }
 
 // GetOrGenerate returns the preview JPEG for the asset (either in-memory bytes or disk file path).
 func (c *Cache) GetOrGenerate(ctx context.Context, assetID, sourcePath string, orientation int) (Result, error) {
-	return c.getOrCreate(ctx, assetID, c.cachePath(assetID), func() ([]byte, error) {
+	return c.getOrCreate(PreviewKind.CacheKey(assetID), c.cachePath(assetID), func() ([]byte, error) {
 		return c.generateBytes(ctx, sourcePath, orientation)
 	})
 }
 
 // GetOrGenerateBackdrop returns a compact, pre-blurred, ~35%-darkened JPEG backdrop for the asset.
 func (c *Cache) GetOrGenerateBackdrop(ctx context.Context, assetID, sourcePath string, orientation int) (Result, error) {
-	return c.getOrCreate(ctx, backdropCacheKey(assetID), c.backdropCachePath(assetID), func() ([]byte, error) {
+	return c.getOrCreate(BackdropKind.CacheKey(assetID), c.backdropCachePath(assetID), func() ([]byte, error) {
 		return c.generateBackdropBytes(ctx, sourcePath, orientation)
 	})
 }
 
-func (c *Cache) getOrCreate(ctx context.Context, cacheKey, targetPath string, generate func() ([]byte, error)) (Result, error) {
+func (c *Cache) getOrCreate(cacheKey, targetPath string, generate func() ([]byte, error)) (Result, error) {
 	switch c.mode {
 	case "disk":
 		return c.getOrGenerateDisk(cacheKey, targetPath, generate)
@@ -331,8 +350,8 @@ func (c *Cache) getOrGenerateHybrid(cacheKey, target string, generate func() ([]
 
 // Evict removes cached renditions (preview and backdrop) from memory and disk if present.
 func (c *Cache) Evict(assetID string) {
-	c.memLRU.Remove(assetID)
-	c.memLRU.Remove(backdropCacheKey(assetID))
+	c.memLRU.Remove(PreviewKind.CacheKey(assetID))
+	c.memLRU.Remove(BackdropKind.CacheKey(assetID))
 	_ = os.Remove(c.cachePath(assetID))
 	_ = os.Remove(c.backdropCachePath(assetID))
 }
@@ -522,6 +541,34 @@ func renderBlurredBackdrop(src image.Image, dstW, dstH, radius, passes int, dim 
 	return separableBoxBlurAndDim(dst, radius, passes, dim)
 }
 
+func boxBlur1D(dstPix, srcPix []uint8, lines, lineLen, lineStride, stepStride, radius int) {
+	win := 2*radius + 1
+	for line := 0; line < lines; line++ {
+		baseOff := line * lineStride
+		var rSum, gSum, bSum int
+		for k := -radius; k <= radius; k++ {
+			ck := min(lineLen-1, max(0, k))
+			off := baseOff + ck*stepStride
+			rSum += int(srcPix[off])
+			gSum += int(srcPix[off+1])
+			bSum += int(srcPix[off+2])
+		}
+		for pos := 0; pos < lineLen; pos++ {
+			dOff := baseOff + pos*stepStride
+			dstPix[dOff] = uint8(rSum / win)
+			dstPix[dOff+1] = uint8(gSum / win)
+			dstPix[dOff+2] = uint8(bSum / win)
+			dstPix[dOff+3] = 255
+
+			outOff := baseOff + max(0, pos-radius)*stepStride
+			inOff := baseOff + min(lineLen-1, pos+radius+1)*stepStride
+			rSum += int(srcPix[inOff]) - int(srcPix[outOff])
+			gSum += int(srcPix[inOff+1]) - int(srcPix[outOff+1])
+			bSum += int(srcPix[inOff+2]) - int(srcPix[outOff+2])
+		}
+	}
+}
+
 func separableBoxBlurAndDim(src *image.RGBA, radius, passes int, dim float64) *image.RGBA {
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
@@ -532,65 +579,10 @@ func separableBoxBlurAndDim(src *image.RGBA, radius, passes int, dim float64) *i
 	cur := src
 	tmp := image.NewRGBA(b)
 	next := image.NewRGBA(b)
-	win := 2*radius + 1
 
 	for pass := 0; pass < passes; pass++ {
-		// Horizontal 1D running-sum pass: cur -> tmp
-		for y := 0; y < h; y++ {
-			rowOff := y * cur.Stride
-			var rSum, gSum, bSum int
-			for dx := -radius; dx <= radius; dx++ {
-				cx := min(w-1, max(0, dx))
-				off := rowOff + cx*4
-				rSum += int(cur.Pix[off])
-				gSum += int(cur.Pix[off+1])
-				bSum += int(cur.Pix[off+2])
-			}
-			for x := 0; x < w; x++ {
-				dOff := y*tmp.Stride + x*4
-				tmp.Pix[dOff] = uint8(rSum / win)
-				tmp.Pix[dOff+1] = uint8(gSum / win)
-				tmp.Pix[dOff+2] = uint8(bSum / win)
-				tmp.Pix[dOff+3] = 255
-
-				outX := max(0, x-radius)
-				inX := min(w-1, x+radius+1)
-				outOff := rowOff + outX*4
-				inOff := rowOff + inX*4
-				rSum += int(cur.Pix[inOff]) - int(cur.Pix[outOff])
-				gSum += int(cur.Pix[inOff+1]) - int(cur.Pix[outOff+1])
-				bSum += int(cur.Pix[inOff+2]) - int(cur.Pix[outOff+2])
-			}
-		}
-
-		// Vertical 1D running-sum pass: tmp -> next
-		for x := 0; x < w; x++ {
-			colOff := x * 4
-			var rSum, gSum, bSum int
-			for dy := -radius; dy <= radius; dy++ {
-				cy := min(h-1, max(0, dy))
-				off := cy*tmp.Stride + colOff
-				rSum += int(tmp.Pix[off])
-				gSum += int(tmp.Pix[off+1])
-				bSum += int(tmp.Pix[off+2])
-			}
-			for y := 0; y < h; y++ {
-				dOff := y*next.Stride + colOff
-				next.Pix[dOff] = uint8(rSum / win)
-				next.Pix[dOff+1] = uint8(gSum / win)
-				next.Pix[dOff+2] = uint8(bSum / win)
-				next.Pix[dOff+3] = 255
-
-				outY := max(0, y-radius)
-				inY := min(h-1, y+radius+1)
-				outOff := outY*tmp.Stride + colOff
-				inOff := inY*tmp.Stride + colOff
-				rSum += int(tmp.Pix[inOff]) - int(tmp.Pix[outOff])
-				gSum += int(tmp.Pix[inOff+1]) - int(tmp.Pix[outOff+1])
-				bSum += int(tmp.Pix[inOff+2]) - int(tmp.Pix[outOff+2])
-			}
-		}
-
+		boxBlur1D(tmp.Pix, cur.Pix, h, w, cur.Stride, 4, radius)
+		boxBlur1D(next.Pix, tmp.Pix, w, h, 4, tmp.Stride, radius)
 		cur, next = next, cur
 	}
 
@@ -616,7 +608,7 @@ func compositeBlurredFrame(src image.Image, frameW, frameH int) image.Image {
 
 	small := image.NewRGBA(image.Rect(0, 0, smallW, smallH))
 	draw.BiLinear.Scale(small, small.Bounds(), src, cropRect, draw.Src, nil)
-	small = boxBlurAndDim(small, 3, 0.72)
+	small = separableBoxBlurAndDim(small, 3, 2, 0.72)
 
 	canvas := image.NewRGBA(image.Rect(0, 0, frameW, frameH))
 	draw.BiLinear.Scale(canvas, canvas.Bounds(), small, small.Bounds(), draw.Src, nil)
@@ -632,43 +624,6 @@ func compositeBlurredFrame(src image.Image, frameW, frameH int) image.Image {
 	fgRect := image.Rect(offsetX, offsetY, offsetX+fgW, offsetY+fgH)
 	draw.CatmullRom.Scale(canvas, fgRect, src, b, draw.Src, nil)
 	return canvas
-}
-
-func boxBlurAndDim(src *image.RGBA, radius int, dim float64) *image.RGBA {
-	b := src.Bounds()
-	w, h := b.Dx(), b.Dy()
-	cur := src
-	for pass := 0; pass < 2; pass++ {
-		next := image.NewRGBA(b)
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				var rSum, gSum, bSum, cnt int
-				for dy := -radius; dy <= radius; dy++ {
-					ny := min(h-1, max(0, y+dy))
-					for dx := -radius; dx <= radius; dx++ {
-						nx := min(w-1, max(0, x+dx))
-						off := ny*cur.Stride + nx*4
-						rSum += int(cur.Pix[off])
-						gSum += int(cur.Pix[off+1])
-						bSum += int(cur.Pix[off+2])
-						cnt++
-					}
-				}
-				dOff := y*next.Stride + x*4
-				next.Pix[dOff] = uint8(rSum / cnt)
-				next.Pix[dOff+1] = uint8(gSum / cnt)
-				next.Pix[dOff+2] = uint8(bSum / cnt)
-				next.Pix[dOff+3] = 255
-			}
-		}
-		cur = next
-	}
-	for i := 0; i < len(cur.Pix); i += 4 {
-		cur.Pix[i] = uint8(float64(cur.Pix[i]) * dim)
-		cur.Pix[i+1] = uint8(float64(cur.Pix[i+1]) * dim)
-		cur.Pix[i+2] = uint8(float64(cur.Pix[i+2]) * dim)
-	}
-	return cur
 }
 
 // applyOrientation transforms an image according to EXIF orientation tags 2-8.

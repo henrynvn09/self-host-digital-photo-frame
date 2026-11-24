@@ -1,14 +1,6 @@
 /* global Module, Log, moment, document */
 "use strict";
 
-const WEEKDAYS_FULL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS_FULL = [
-	"January", "February", "March", "April", "May", "June",
-	"July", "August", "September", "October", "November", "December"
-];
-const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
 function parseDurationMs(value, fallbackMs = 1200) {
 	if (typeof value === "number" && Number.isFinite(value)) {
 		return Math.max(0, value);
@@ -29,84 +21,35 @@ function parseDurationMs(value, fallbackMs = 1200) {
 	return Number.isFinite(raw) && raw >= 0 ? raw : fallbackMs;
 }
 
-function formatBuiltInDate(isoString, pattern) {
-	if (!isoString) {
-		return "";
-	}
-	const d = new Date(isoString);
-	if (Number.isNaN(d.getTime())) {
-		return "";
-	}
-	const pad2 = (n) => String(n).padStart(2, "0");
-	const useUtc = /Z$|[+-]00:00$/i.test(String(isoString).trim());
-	const year = useUtc ? d.getUTCFullYear() : d.getFullYear();
-	const month = useUtc ? d.getUTCMonth() : d.getMonth();
-	const day = useUtc ? d.getUTCDate() : d.getDate();
-	const weekday = useUtc ? d.getUTCDay() : d.getDay();
-	const hours24 = useUtc ? d.getUTCHours() : d.getHours();
-	const minutes = useUtc ? d.getUTCMinutes() : d.getMinutes();
-	const seconds = useUtc ? d.getUTCSeconds() : d.getSeconds();
-	const hours12 = hours24 % 12 || 12;
-
-	return String(pattern || "DD-MM-YYYY dddd HH:mm").replace(
-		/\[([^\]]*)\]|YYYY|YY|MMMM|MMM|MM|M|DD|D|dddd|ddd|HH|H|hh|h|mm|m|ss|s|A|a/g,
-		(match, literal) => {
-			if (literal !== undefined) return literal;
-			switch (match) {
-				case "YYYY": return String(year);
-				case "YY": return String(year).slice(-2);
-				case "MMMM": return MONTHS_FULL[month];
-				case "MMM": return MONTHS_SHORT[month];
-				case "MM": return pad2(month + 1);
-				case "M": return String(month + 1);
-				case "DD": return pad2(day);
-				case "D": return String(day);
-				case "dddd": return WEEKDAYS_FULL[weekday];
-				case "ddd": return WEEKDAYS_SHORT[weekday];
-				case "HH": return pad2(hours24);
-				case "H": return String(hours24);
-				case "hh": return pad2(hours12);
-				case "h": return String(hours12);
-				case "mm": return pad2(minutes);
-				case "m": return String(minutes);
-				case "ss": return pad2(seconds);
-				case "s": return String(seconds);
-				case "A": return hours24 < 12 ? "AM" : "PM";
-				case "a": return hours24 < 12 ? "am" : "pm";
-				default: return match;
-			}
-		}
-	);
-}
-
 function formatCaptureDate(isoString, dateFormat) {
 	if (!isoString) {
 		return "";
 	}
 	if (typeof moment === "function") {
-		const parsed = moment(isoString);
+		const parsed = typeof moment.parseZone === "function"
+			? moment.parseZone(isoString)
+			: moment(isoString);
 		if (parsed && typeof parsed.isValid === "function" && parsed.isValid()) {
-			return parsed.format(dateFormat);
+			return parsed.format(dateFormat || "DD-MM-YYYY dddd HH:mm");
 		}
 	}
-	return formatBuiltInDate(isoString, dateFormat);
+	return String(isoString).slice(0, 16).replace("T", " ");
 }
 
 function formatGeoLine(exifInfo) {
 	if (!exifInfo || typeof exifInfo !== "object") {
 		return "";
 	}
-	const parts = [exifInfo.city, exifInfo.state, exifInfo.country]
+	return [exifInfo.city, exifInfo.state, exifInfo.country]
 		.map((part) => (typeof part === "string" ? part.trim() : ""))
-		.filter((part) => part.length > 0);
-	return parts.join(", ");
+		.filter((part) => part.length > 0)
+		.join(", ");
 }
 
-function computeOverlayModel(payload, fallbackConfig) {
+function computeOverlayModel(payload) {
 	const fields = Array.isArray(payload.infoFields) && payload.infoFields.length > 0
 		? payload.infoFields
-		: (Array.isArray(fallbackConfig.infoFields) ? fallbackConfig.infoFields : ["date", "geo", "count", "album"]);
-	const dateFormat = payload.dateFormat || fallbackConfig.dateFormat || "DD-MM-YYYY dddd HH:mm";
+		: ["date", "geo", "count", "album"];
 
 	const headerLines = [];
 	if (fields.includes("count") && payload.index > 0 && payload.total > 0) {
@@ -117,41 +60,17 @@ function computeOverlayModel(payload, fallbackConfig) {
 	}
 
 	const bodyLines = [];
-	const dateStr = payload.exifInfo && payload.exifInfo.dateTimeOriginal
-		? formatCaptureDate(payload.exifInfo.dateTimeOriginal, dateFormat)
-		: "";
-
 	for (const field of fields) {
-		switch (field) {
-			case "date":
-				if (dateStr) {
-					bodyLines.push(dateStr);
-				}
-				break;
-			case "geo": {
-				const geo = formatGeoLine(payload.exifInfo);
-				if (geo) {
-					bodyLines.push(geo);
-				}
-				break;
+		if (field === "date" && payload.exifInfo && payload.exifInfo.dateTimeOriginal) {
+			const dateStr = formatCaptureDate(payload.exifInfo.dateTimeOriginal, payload.dateFormat);
+			if (dateStr) {
+				bodyLines.push(dateStr);
 			}
-			case "since":
-				if (payload.exifInfo && payload.exifInfo.dateTimeOriginal && typeof moment === "function") {
-					const m = moment(payload.exifInfo.dateTimeOriginal);
-					if (m.isValid()) {
-						bodyLines.push(m.fromNow());
-					}
-				}
-				break;
-			case "name": {
-				const name = payload.originalFileName || (payload.originalPath ? payload.originalPath.split("/").pop() : "");
-				if (name) {
-					bodyLines.push(name);
-				}
-				break;
+		} else if (field === "geo") {
+			const geo = formatGeoLine(payload.exifInfo);
+			if (geo) {
+				bodyLines.push(geo);
 			}
-			default:
-				break;
 		}
 	}
 
@@ -166,13 +85,12 @@ const mediaBackgroundDefinition = {
 		transitionSpeed: "1.2s",
 		backgroundSize: "contain",
 		backgroundPosition: "center",
-		showBlurredBackdrop: true,
-		showMediaInfo: true,
-		infoFields: ["date", "geo", "count", "album"],
+		showBlurredBackdrop: null,
+		showMediaInfo: null,
+		infoFields: null,
 		dateFormat: "DD-MM-YYYY dddd HH:mm",
-		infoPosition: "bottomRight",
-		cyclicSources: false,
-		sources: []
+		infoPosition: null,
+		sources: null
 	},
 
 	getStyles() {
@@ -207,20 +125,11 @@ const mediaBackgroundDefinition = {
 		root.appendChild(stage);
 		this.stageEl = stage;
 
-		const showInfo = this.config.showMediaInfo !== undefined
-			? Boolean(this.config.showMediaInfo)
-			: (this.config.showImageInfo !== undefined ? Boolean(this.config.showImageInfo) : true);
-
-		if (showInfo) {
-			const pos = this.config.infoPosition || this.config.imageInfoLocation || "bottomRight";
-			const info = doc.createElement("div");
-			info.className = `info ${pos}`;
-			info.style.display = "none";
-			root.appendChild(info);
-			this.infoEl = info;
-		} else {
-			this.infoEl = null;
-		}
+		const info = doc.createElement("div");
+		info.className = "info bottomRight";
+		info.style.display = "none";
+		root.appendChild(info);
+		this.infoEl = info;
 
 		if (!this.initializedBackend) {
 			this.initializedBackend = true;
@@ -267,8 +176,7 @@ const mediaBackgroundDefinition = {
 		if (!this.stageEl) {
 			return;
 		}
-		const existing = [...this.stageEl.children];
-		for (const slide of existing) {
+		for (const slide of [...this.stageEl.children]) {
 			this.teardownSlide(slide);
 		}
 	},
@@ -277,17 +185,17 @@ const mediaBackgroundDefinition = {
 		if (!this.infoEl) {
 			return;
 		}
-		const showInfo = payload.showMediaInfo !== undefined
-			? Boolean(payload.showMediaInfo)
-			: true;
-		if (!showInfo) {
+		const pos = payload.infoPosition || "bottomRight";
+		this.infoEl.className = `info ${pos}`;
+
+		if (payload.showMediaInfo === false) {
 			this.infoEl.style.display = "none";
 			this.infoEl.textContent = "";
 			return;
 		}
 
 		const doc = this.getDoc();
-		const { headerLines, bodyLines } = computeOverlayModel(payload, this.config);
+		const { headerLines, bodyLines } = computeOverlayModel(payload);
 		this.infoEl.textContent = "";
 
 		if (headerLines.length === 0 && bodyLines.length === 0) {
@@ -328,18 +236,15 @@ const mediaBackgroundDefinition = {
 			this.teardownSlide(this.stageEl.children[0]);
 		}
 
-		const transitionSpeed = payload.transitionSpeed ?? this.config.transitionSpeed ?? "1.2s";
+		const transitionSpeed = payload.transitionSpeed || "1.2s";
 		const durationMs = parseDurationMs(transitionSpeed, 1200);
-		const showBackdrop = payload.showBlurredBackdrop !== undefined
-			? Boolean(payload.showBlurredBackdrop)
-			: (this.config.showBlurredBackdrop !== undefined
-				? Boolean(this.config.showBlurredBackdrop)
-				: Boolean(this.config.showBlurredImageForBlackBars ?? true));
-		const backgroundSize = payload.backgroundSize || this.config.backgroundSize || "contain";
-		const backgroundPosition = payload.backgroundPosition || this.config.backgroundPosition || "center";
+		const showBackdrop = payload.showBlurredBackdrop !== false;
+		const backgroundSize = payload.backgroundSize || "contain";
+		const backgroundPosition = payload.backgroundPosition || "center";
 
 		const slide = doc.createElement("div");
 		slide.className = "mmmb-slide";
+		slide.style.backgroundColor = "#000";
 		slide.style.opacity = "0";
 		if (durationMs > 0) {
 			slide.style.transition = `opacity ${transitionSpeed} ease-in-out`;
@@ -375,7 +280,6 @@ const mediaBackgroundDefinition = {
 			if (!this.stageEl || slide.parentNode !== this.stageEl) {
 				return;
 			}
-			// Tear down every older sibling slide ahead of this slide
 			for (const sibling of [...this.stageEl.children]) {
 				if (sibling === slide) {
 					break;
@@ -423,29 +327,6 @@ const mediaBackgroundDefinition = {
 		this.sendSocketNotification("MEDIABACKGROUND_RESUME", {
 			identifier: this.identifier
 		});
-	},
-
-	notificationReceived(notification) {
-		switch (notification) {
-			case "MEDIABACKGROUND_NEXT":
-			case "IMMICHSLIDESHOW_NEXT":
-				this.sendSocketNotification("MEDIABACKGROUND_NEXT", { identifier: this.identifier });
-				break;
-			case "MEDIABACKGROUND_PREVIOUS":
-			case "IMMICHSLIDESHOW_PREVIOUS":
-				this.sendSocketNotification("MEDIABACKGROUND_PREVIOUS", { identifier: this.identifier });
-				break;
-			case "MEDIABACKGROUND_PAUSE":
-			case "IMMICHSLIDESHOW_PAUSE":
-				this.suspend();
-				break;
-			case "MEDIABACKGROUND_RESUME":
-			case "IMMICHSLIDESHOW_RESUME":
-				this.resume();
-				break;
-			default:
-				break;
-		}
 	},
 
 	socketNotificationReceived(notification, payload) {

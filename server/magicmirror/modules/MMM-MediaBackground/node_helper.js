@@ -2,10 +2,8 @@
 
 const NodeHelper = require("node_helper");
 const Log = require("logger");
-const {
-	registerMediaRoutes,
-	createSlideshowController
-} = require("./slideshow_backend");
+const { registerMediaRoutes } = require("./media_pipe");
+const { createSlideshowController } = require("./slideshow_controller");
 
 module.exports = NodeHelper.create({
 	requiresVersion: "2.1.0",
@@ -60,12 +58,6 @@ module.exports = NodeHelper.create({
 				break;
 			case "MEDIABACKGROUND_RESUME":
 				this.controller.resume(payload.identifier);
-				break;
-			case "MEDIABACKGROUND_NEXT":
-				this.controller.next(payload.identifier);
-				break;
-			case "MEDIABACKGROUND_PREVIOUS":
-				this.controller.previous(payload.identifier);
 				break;
 			case "MEDIABACKGROUND_LOAD_ERROR":
 				this.controller.skipBrokenAsset(payload.identifier, payload.assetId);

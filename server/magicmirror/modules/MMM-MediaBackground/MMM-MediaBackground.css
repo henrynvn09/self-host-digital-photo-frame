@@ -22,6 +22,10 @@
 	overflow: hidden;
 }
 
+.MMM-MediaBackground .mmmb-slide {
+	background-color: #000;
+}
+
 .MMM-MediaBackground .mmmb-backdrop {
 	background-repeat: no-repeat;
 	background-position: center;

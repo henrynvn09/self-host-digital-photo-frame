@@ -344,17 +344,17 @@ func (s *Server) handleGetAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAssetPreview(w http.ResponseWriter, r *http.Request) {
-	s.serveAssetRendition(w, r, "", ".jpg", s.cache.GetOrGenerate)
+	s.serveAssetRendition(w, r, preview.PreviewKind, s.cache.GetOrGenerate)
 }
 
 func (s *Server) handleAssetBackdrop(w http.ResponseWriter, r *http.Request) {
-	s.serveAssetRendition(w, r, "backdrop-", ".backdrop.jpg", s.cache.GetOrGenerateBackdrop)
+	s.serveAssetRendition(w, r, preview.BackdropKind, s.cache.GetOrGenerateBackdrop)
 }
 
 func (s *Server) serveAssetRendition(
 	w http.ResponseWriter,
 	r *http.Request,
-	etagPrefix, fileSuffix string,
+	kind preview.RenditionKind,
 	generate func(rCtx context.Context, assetID, sourcePath string, orientation int) (preview.Result, error),
 ) {
 	asset := s.lookupAsset(w, r)
@@ -362,7 +362,7 @@ func (s *Server) serveAssetRendition(
 		return
 	}
 
-	etag := fmt.Sprintf(`"%s%s-%d"`, etagPrefix, asset.ID, asset.Mtime)
+	etag := kind.ETag(asset.ID, asset.Mtime)
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -379,7 +379,7 @@ func (s *Server) serveAssetRendition(
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
 	if len(res.Data) > 0 {
-		http.ServeContent(w, r, asset.ID+fileSuffix, time.Unix(asset.Mtime, 0), bytes.NewReader(res.Data))
+		http.ServeContent(w, r, kind.Filename(asset.ID), time.Unix(asset.Mtime, 0), bytes.NewReader(res.Data))
 		return
 	}
 	http.ServeFile(w, r, res.Path)
