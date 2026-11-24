@@ -1,3 +1,7 @@
+---
+status: partially superseded by ADR-0008
+---
+
 # Expose an Immich-compatible REST subset instead of a custom photo API
 
 `digital-photoframe` already runs `MMM-ImmichSlideShow`, which supports cross-year anniversary windows, random pools, date-range queries, and metadata overlays (`date`, `geo`, `count`, `album`). Rather than rewriting or replacing the MagicMirror frontend module—or running full Immich (Postgres, Redis, ML containers)—`server-photo-api` implements the small subset of Immich REST endpoints that `MMM-ImmichSlideShow` calls, omitting smart/ML search.

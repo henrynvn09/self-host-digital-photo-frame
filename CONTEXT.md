@@ -1,26 +1,26 @@
 # Photoframe
 
-A self-hosted digital photo frame system consisting of a NAS-hosted photo indexing and serving service, a MagicMirror display server, and a motion-aware Raspberry Pi display client.
+A self-hosted digital media frame system consisting of a NAS-hosted media indexing and serving service, a MagicMirror display server, and a motion-aware kiosk display client.
 
 ## Language
 
-### Photo Library & Indexing
+### Media Library & Indexing
 
 **Asset**:
-A single indexed image file in the library, identified by a deterministic path-based ID and described by its capture date, geographic location, and optional album.
-_Avoid_: Photo, image, file, item
+A single indexed photo or video in the library, identified by a deterministic path-based ID and described by its media type, capture date, geographic location, and optional album.
+_Avoid_: Photo, image, video file, media item, file
 
 **Library**:
 The read-only root directory tree on the NAS containing all original source assets.
 _Avoid_: Photo folder, volume, storage, bucket
 
 **Scan**:
-An incremental pass over the library that adds new assets, updates changed assets, and removes deleted assets from the index while skipping system and excluded directories.
+An incremental pass over the library that adds new assets, updates changed assets, and removes deleted assets from the index while skipping system directories, excluded paths, and short Live Photo companion clips.
 _Avoid_: Sync, crawl, import, ingest
 
 **Preview**:
-A display-sized (2560×1440 default), EXIF-rotated JPEG rendition generated lazily on demand from an asset and persisted in a bounded LRU disk cache.
-_Avoid_: Thumbnail, resized image, variant
+A display-ready rendition generated on demand from an asset—a rotated still image for a photo, or a silent, 30 fps, duration-capped clip for a video—held in a bounded cache for fast playback.
+_Avoid_: Thumbnail, resized image, transcoded file, variant
 
 **Album**:
 A human-readable event or trip label derived from an asset's immediate parent directory name, omitted when that directory name is purely numeric.
@@ -41,8 +41,12 @@ _Avoid_: Reset round, replenishment, reload, wipe
 ### Display & Client
 
 **Frame Client**:
-The Raspberry Pi 3B kiosk running MagicMirror in client-only X11 mode connected to the NAS server over LAN.
+The dedicated kiosk display device connected to the server over LAN that renders the slideshow and widget overlays on the wall monitor.
 _Avoid_: Display box, Pi server, kiosk browser
+
+**Playback Window**:
+The bounded display duration assigned to a video asset (defaulting to the photo slide interval): longer videos play only their opening segment up to this bound, while shorter videos loop continuously until the window elapses.
+_Avoid_: Video timeout, clip cap, max length
 
 **Display Schedule**:
 The configured weekday and weekend active hours during which the frame client runs MagicMirror and responds to motion detection.
