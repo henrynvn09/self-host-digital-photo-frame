@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -54,6 +55,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/assets/{id}/thumbnail", s.handleAssetPreview)
 	s.mux.HandleFunc("GET /api/assets/{id}/backdrop", s.handleAssetBackdrop)
 	s.mux.HandleFunc("GET /api/assets/{id}/stream", s.handleAssetStream)
+	s.mux.HandleFunc("POST /api/assets/{id}/warm", s.handleAssetWarm)
 	s.mux.HandleFunc("POST /api/admin/scan", s.handleAdminScan)
 }
 
@@ -371,6 +373,84 @@ func (s *Server) handleAssetBackdrop(w http.ResponseWriter, r *http.Request) {
 	s.serveAssetRendition(w, r, preview.BackdropKind, s.cache.GetOrGenerateBackdrop)
 }
 
+func parseVideoQueryParams(r *http.Request) (windowSec float64, requestedFPS int) {
+	q := r.URL.Query()
+	if rawWin := strings.TrimSpace(q.Get("window")); rawWin != "" {
+		if parsedWin, err := strconv.ParseFloat(rawWin, 64); err == nil && parsedWin > 0 {
+			windowSec = parsedWin
+		}
+	}
+	if rawFPS := strings.TrimSpace(q.Get("fps")); rawFPS != "" {
+		if parsedFPS, err := strconv.Atoi(rawFPS); err == nil && parsedFPS > 0 {
+			requestedFPS = parsedFPS
+		}
+	}
+	return windowSec, requestedFPS
+}
+
+func writeMediaError(w http.ResponseWriter, err error) {
+	if errors.Is(err, preview.ErrMediaUnreadable) {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+}
+
+func (s *Server) handleAssetWarm(w http.ResponseWriter, r *http.Request) {
+	asset := s.lookupAsset(w, r)
+	if asset == nil {
+		return
+	}
+
+	sourcePath := filepath.Join(s.libraryDir, filepath.FromSlash(asset.RelPath))
+	if strings.EqualFold(asset.MediaType, "VIDEO") {
+		windowSec, requestedFPS := parseVideoQueryParams(r)
+		videoPreview, err := s.cache.GetOrGenerateVideoPreview(r.Context(), asset.ID, asset.Mtime, sourcePath, windowSec, requestedFPS)
+		if err != nil {
+			if r.Context().Err() != nil {
+				return
+			}
+			writeMediaError(w, err)
+			return
+		}
+		if _, err := s.cache.GetOrGenerateBackdrop(r.Context(), asset.ID, sourcePath, asset.Orientation); err != nil {
+			if r.Context().Err() != nil {
+				return
+			}
+			writeMediaError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":        "ok",
+			"id":            asset.ID,
+			"type":          "VIDEO",
+			"windowSeconds": videoPreview.WindowSec,
+			"fps":           videoPreview.FPS,
+		})
+		return
+	}
+
+	if _, err := s.cache.GetOrGenerate(r.Context(), asset.ID, sourcePath, asset.Orientation); err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
+		writeMediaError(w, err)
+		return
+	}
+	if _, err := s.cache.GetOrGenerateBackdrop(r.Context(), asset.ID, sourcePath, asset.Orientation); err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
+		writeMediaError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"id":     asset.ID,
+		"type":   "IMAGE",
+	})
+}
+
 func (s *Server) handleAssetStream(w http.ResponseWriter, r *http.Request) {
 	asset := s.lookupAsset(w, r)
 	if asset == nil {
@@ -381,19 +461,7 @@ func (s *Server) handleAssetStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := r.URL.Query()
-	var windowSec float64
-	if rawWin := strings.TrimSpace(q.Get("window")); rawWin != "" {
-		if parsedWin, err := strconv.ParseFloat(rawWin, 64); err == nil && parsedWin > 0 {
-			windowSec = parsedWin
-		}
-	}
-	var requestedFPS int
-	if rawFPS := strings.TrimSpace(q.Get("fps")); rawFPS != "" {
-		if parsedFPS, err := strconv.Atoi(rawFPS); err == nil && parsedFPS > 0 {
-			requestedFPS = parsedFPS
-		}
-	}
+	windowSec, requestedFPS := parseVideoQueryParams(r)
 
 	sourcePath := filepath.Join(s.libraryDir, filepath.FromSlash(asset.RelPath))
 	videoPreview, err := s.cache.GetOrGenerateVideoPreview(r.Context(), asset.ID, asset.Mtime, sourcePath, windowSec, requestedFPS)
@@ -401,7 +469,7 @@ func (s *Server) handleAssetStream(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		writeMediaError(w, err)
 		return
 	}
 
@@ -442,7 +510,10 @@ func (s *Server) serveAssetRendition(
 	sourcePath := filepath.Join(s.libraryDir, filepath.FromSlash(asset.RelPath))
 	res, err := generate(r.Context(), asset.ID, sourcePath, asset.Orientation)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		if r.Context().Err() != nil {
+			return
+		}
+		writeMediaError(w, err)
 		return
 	}
 

@@ -145,6 +145,8 @@ const mediaBackgroundDefinition = {
 		maxVideoDurationSeconds: null,
 		videoFps: 30,
 		videoMuted: true,
+		prefetchNext: true,
+		coldCacheHoldMs: 8000,
 		transitionSpeed: "1.2s",
 		backgroundSize: "contain",
 		backgroundPosition: "center",
@@ -371,7 +373,15 @@ const mediaBackgroundDefinition = {
 		};
 
 		img.onerror = () => {
+			img.onload = null;
+			img.onerror = null;
+			if (!this.stageEl || slide.parentNode !== this.stageEl) {
+				return;
+			}
 			this.teardownSlide(slide);
+			if (this.stageEl.children.length === 0 && this.infoEl) {
+				this.infoEl.style.display = "none";
+			}
 			this.sendSocketNotification("MEDIABACKGROUND_LOAD_ERROR", {
 				identifier: this.identifier,
 				assetId: payload.assetId
