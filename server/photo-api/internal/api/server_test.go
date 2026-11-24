@@ -960,7 +960,14 @@ func TestVideoIndexingSearchBackdropAndMJPEGStream(t *testing.T) {
 	webmRel := "2020/Web Clips/clip_20200715.webm"
 	synthesizeTestVideo(t, filepath.Join(env.photosDir, filepath.FromSlash(webmRel)), 320, 240, 15, 1.5, false, 0)
 
-	// 2. Initial Scan indexes all 5 assets; second Scan skips all 5 unchanged files
+	// Corrupt video asset -> Scan records an error instead of freezing a 0s/0x0 row in SQLite
+	corruptRel := "2020/Web Clips/broken_20200715.mp4"
+	corruptFullPath := filepath.Join(env.photosDir, filepath.FromSlash(corruptRel))
+	if err := os.WriteFile(corruptFullPath, []byte("not-a-valid-mp4"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Initial Scan indexes all 5 valid assets and records 1 error for the unreadable video; removing the broken video leaves 5 skipped
 	scanRec := env.doJSON(t, "POST", "/api/admin/scan", nil, true)
 	if scanRec.Code != http.StatusOK {
 		t.Fatalf("scan failed: %d %s", scanRec.Code, scanRec.Body.String())
@@ -969,8 +976,11 @@ func TestVideoIndexingSearchBackdropAndMJPEGStream(t *testing.T) {
 	if err := json.Unmarshal(scanRec.Body.Bytes(), &stats); err != nil {
 		t.Fatal(err)
 	}
-	if stats.Added != 5 || stats.Errors != 0 {
-		t.Fatalf("expected 5 added (1 photo + 4 videos), got %+v", stats)
+	if stats.Added != 5 || stats.Errors != 1 {
+		t.Fatalf("expected 5 added (1 photo + 4 videos) and 1 probe error, got %+v", stats)
+	}
+	if err := os.Remove(corruptFullPath); err != nil {
+		t.Fatal(err)
 	}
 
 	rescanRec := env.doJSON(t, "POST", "/api/admin/scan", nil, true)
@@ -978,7 +988,7 @@ func TestVideoIndexingSearchBackdropAndMJPEGStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	if stats.Skipped != 5 || stats.Added != 0 || stats.Updated != 0 {
-		t.Fatalf("expected all 5 unchanged media files skipped on rescan, got %+v", stats)
+		t.Fatalf("expected all 5 unchanged assets skipped on rescan, got %+v", stats)
 	}
 
 	// 3. Verify GET /api/assets/{id} metadata for rotated portrait .MOV
@@ -1106,14 +1116,14 @@ func TestVideoIndexingSearchBackdropAndMJPEGStream(t *testing.T) {
 	if memRec.Code != http.StatusOK {
 		t.Fatalf("memories failed: %d", memRec.Code)
 	}
-	var memBuckets []struct {
+	var memoryGroups []struct {
 		Assets []assetItem `json:"assets"`
 	}
-	if err := json.Unmarshal(memRec.Body.Bytes(), &memBuckets); err != nil {
+	if err := json.Unmarshal(memRec.Body.Bytes(), &memoryGroups); err != nil {
 		t.Fatal(err)
 	}
-	if len(memBuckets) != 4 {
-		t.Fatalf("expected 4 yearly memory buckets (2023, 2022, 2021, 2020), got %d", len(memBuckets))
+	if len(memoryGroups) != 4 {
+		t.Fatalf("expected 4 yearly memory entries (2023, 2022, 2021, 2020), got %d", len(memoryGroups))
 	}
 
 	// 5. Video /thumbnail poster & /backdrop pre-blurred JPEG in memory mode with zero disk writes

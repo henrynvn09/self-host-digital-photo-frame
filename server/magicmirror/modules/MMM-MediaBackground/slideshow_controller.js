@@ -101,7 +101,7 @@ function normalizeSource(rawSource, baseSource, moduleDefaults, currentYear) {
 	const merged = Object.assign({}, baseSource || {}, rawSource || {});
 	const rawUrl = String(merged.url ?? merged.immichUrl ?? "").trim().replace(/\/+$/, "");
 	const rawMode = String(merged.mode ?? "anniversary").trim().toLowerCase();
-	const mode = rawMode === "memories" ? "memory" : (VALID_MODES.has(rawMode) ? rawMode : "anniversary");
+	const mode = VALID_MODES.has(rawMode) ? rawMode : "anniversary";
 
 	const startYear = clampInt(merged.anniversaryStartYear, 1900, 9999, 2010);
 	const defaultEndYear = Math.max(startYear, currentYear);
@@ -434,9 +434,9 @@ async function fetchSourceAssets(source, { now, randomFn, logger }) {
 			}
 		);
 		if (Array.isArray(data)) {
-			for (const bucket of data) {
-				if (bucket && Array.isArray(bucket.assets)) {
-					rawAssets.push(...bucket.assets);
+			for (const entry of data) {
+				if (entry && Array.isArray(entry.assets)) {
+					rawAssets.push(...entry.assets);
 				}
 			}
 		}

@@ -889,6 +889,7 @@ test("MMM-MediaBackground renders VIDEO slides via <img> MJPEG stream over stati
 		assert.equal(Boolean(parsedUrl1.searchParams.get("t")), true, "expected cache-busting t=<nonce> param");
 
 		img1.onload();
+		assert.equal(img1.onload, null, "img.onload must detach after first frame so MJPEG frames never re-trigger overlay/timer setup");
 		assert.equal(infoDiv.children[0].textContent, "2 of 10Birthday Party");
 		assert.equal(infoDiv.children[1].textContent, "15-07-2023 Saturday 10:30");
 		assert.equal(infoDiv.children[2].textContent, "Irvine, California, United States");

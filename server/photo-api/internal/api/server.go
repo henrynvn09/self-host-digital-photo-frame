@@ -396,7 +396,7 @@ func (s *Server) handleAssetStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sourcePath := filepath.Join(s.libraryDir, filepath.FromSlash(asset.RelPath))
-	clip, err := s.cache.GetOrGenerateVideoClip(r.Context(), asset.ID, asset.Mtime, sourcePath, windowSec, requestedFPS)
+	videoPreview, err := s.cache.GetOrGenerateVideoPreview(r.Context(), asset.ID, asset.Mtime, sourcePath, windowSec, requestedFPS)
 	if err != nil {
 		if r.Context().Err() != nil {
 			return
@@ -419,7 +419,7 @@ func (s *Server) handleAssetStream(w http.ResponseWriter, r *http.Request) {
 		flushFn()
 	}
 
-	_ = s.cache.StreamMJPEG(r.Context(), w, flushFn, clip, asset.DurationSec)
+	_ = s.cache.StreamMJPEG(r.Context(), w, flushFn, videoPreview, asset.DurationSec)
 }
 
 func (s *Server) serveAssetRendition(

@@ -65,20 +65,10 @@ function resolvePayloadWindowSeconds(payload, config) {
 	if (Number.isFinite(explicit) && explicit > 0) {
 		return Number(explicit.toFixed(3));
 	}
-	const cfg = config || {};
-	const maxSec = Number(cfg.maxVideoDurationSeconds);
-	if (cfg.maxVideoDurationSeconds != null && cfg.maxVideoDurationSeconds !== "" && Number.isFinite(maxSec) && maxSec > 0) {
-		return Number(maxSec.toFixed(3));
-	}
-	const videoSpeedMs = Number(cfg.videoSlideshowSpeed);
-	if (cfg.videoSlideshowSpeed != null && cfg.videoSlideshowSpeed !== "" && Number.isFinite(videoSpeedMs) && videoSpeedMs > 0) {
-		return Number((videoSpeedMs / 1000).toFixed(3));
-	}
-	const slideSpeedMs = Number(cfg.slideshowSpeed);
-	if (Number.isFinite(slideSpeedMs) && slideSpeedMs > 0) {
-		return Number((slideSpeedMs / 1000).toFixed(3));
-	}
-	return 12;
+	const slideSpeedMs = Number(config && config.slideshowSpeed);
+	return Number.isFinite(slideSpeedMs) && slideSpeedMs > 0
+		? Number((slideSpeedMs / 1000).toFixed(3))
+		: 12;
 }
 
 function formatVideoBadge(durationSeconds, windowSeconds) {
@@ -364,6 +354,7 @@ const mediaBackgroundDefinition = {
 		};
 
 		img.onload = () => {
+			img.onload = null;
 			if (!this.stageEl || slide.parentNode !== this.stageEl) {
 				return;
 			}

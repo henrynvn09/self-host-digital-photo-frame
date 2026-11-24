@@ -173,7 +173,13 @@ func (s *Scanner) Scan(ctx context.Context) (Stats, error) {
 
 		var asset store.Asset
 		if isVid {
-			asset = buildVideoAsset(ctx, path, relSlash, mtime, size, info.ModTime())
+			var probeErr error
+			asset, probeErr = buildVideoAsset(ctx, path, relSlash, mtime, size, info.ModTime())
+			if probeErr != nil {
+				slog.Warn("ffprobe video asset failed", "path", relSlash, "error", probeErr)
+				stats.Errors++
+				return nil
+			}
 		} else {
 			asset = buildAsset(path, relSlash, mtime, size, info.ModTime(), loadGeo)
 		}
@@ -405,32 +411,31 @@ func extractStreamRotation(st ffprobeStream) int {
 	return 0
 }
 
-func buildVideoAsset(ctx context.Context, fullPath, relSlash string, mtime, size int64, modTime time.Time) store.Asset {
+func buildVideoAsset(ctx context.Context, fullPath, relSlash string, mtime, size int64, modTime time.Time) (store.Asset, error) {
+	meta, err := probeVideo(ctx, fullPath)
+	if err != nil {
+		return store.Asset{}, err
+	}
+
 	a := store.Asset{
 		ID:          DeterministicUUID(relSlash),
 		RelPath:     relSlash,
 		MediaType:   "VIDEO",
+		DurationSec: meta.durationSec,
 		Mtime:       mtime,
 		Size:        size,
 		Album:       deriveAlbum(relSlash),
 		Orientation: 1,
+		Width:       meta.width,
+		Height:      meta.height,
 		IndexedAt:   time.Now().UTC(),
-	}
-
-	meta, err := probeVideo(ctx, fullPath)
-	if err != nil {
-		slog.Warn("ffprobe video failed", "path", relSlash, "error", err)
-	} else {
-		a.DurationSec = meta.durationSec
-		a.Width = meta.width
-		a.Height = meta.height
 	}
 
 	a.TakenAt = resolveDate(time.Time{}, relSlash, modTime)
 	a.TakenYear = a.TakenAt.UTC().Year()
 	a.TakenMonth = int(a.TakenAt.UTC().Month())
 	a.TakenDay = a.TakenAt.UTC().Day()
-	return a
+	return a, nil
 }
 
 func readImageDimensions(path string) (int, int) {
