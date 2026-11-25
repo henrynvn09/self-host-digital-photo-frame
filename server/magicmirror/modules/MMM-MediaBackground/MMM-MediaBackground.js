@@ -65,10 +65,7 @@ function resolvePayloadWindowSeconds(payload, config) {
 	if (Number.isFinite(explicit) && explicit > 0) {
 		return Number(explicit.toFixed(3));
 	}
-	const slideSpeedMs = Number(config && config.slideshowSpeed);
-	return Number.isFinite(slideSpeedMs) && slideSpeedMs > 0
-		? Number((slideSpeedMs / 1000).toFixed(3))
-		: 12;
+	return 30;
 }
 
 function formatVideoBadge(durationSeconds, windowSeconds) {
@@ -90,7 +87,9 @@ function buildVideoStreamUrl(payload, config, nonce) {
 	const windowSec = resolvePayloadWindowSeconds(payload, config);
 	const rawFps = Number(payload.videoFps ?? (config && config.videoFps) ?? 30);
 	const fps = Number.isFinite(rawFps) && rawFps > 0 ? Math.min(30, Math.max(1, Math.trunc(rawFps))) : 30;
-	let url = `/mediabackground/stream/${encodeURIComponent(payload.assetId)}?window=${encodeURIComponent(String(windowSec))}&fps=${encodeURIComponent(String(fps))}&t=${encodeURIComponent(String(nonce))}`;
+	const shortMode = String(payload.shortVideoMode ?? (config && config.shortVideoMode) ?? "advance").trim().toLowerCase();
+	const loopParam = shortMode === "loop" ? "true" : "false";
+	let url = `/mediabackground/stream/${encodeURIComponent(payload.assetId)}?window=${encodeURIComponent(String(windowSec))}&fps=${encodeURIComponent(String(fps))}&loop=${loopParam}&t=${encodeURIComponent(String(nonce))}`;
 	if (Number.isInteger(payload.sourceIndex)) {
 		url += `&source=${payload.sourceIndex}`;
 	}
@@ -143,6 +142,7 @@ const mediaBackgroundDefinition = {
 		slideshowSpeed: 12000,
 		videoSlideshowSpeed: null,
 		maxVideoDurationSeconds: null,
+		shortVideoMode: "advance",
 		videoFps: 30,
 		videoMuted: true,
 		prefetchNext: true,

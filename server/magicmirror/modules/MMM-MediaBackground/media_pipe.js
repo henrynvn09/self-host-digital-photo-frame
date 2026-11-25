@@ -59,6 +59,9 @@ function pipeUpstreamAsset(req, res, source, upstreamSubpath, logger, { isStream
 		if (query.fps !== undefined && String(query.fps).trim() !== "") {
 			target.searchParams.set("fps", String(query.fps).trim());
 		}
+		if (query.loop !== undefined && String(query.loop).trim() !== "") {
+			target.searchParams.set("loop", String(query.loop).trim());
+		}
 	}
 
 	const transport = target.protocol === "https:" ? https : http;

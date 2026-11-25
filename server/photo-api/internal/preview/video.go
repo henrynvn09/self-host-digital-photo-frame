@@ -309,6 +309,7 @@ func (c *Cache) StreamMJPEG(
 	flush func(),
 	preview VideoPreview,
 	sourceDurationSec float64,
+	loopShort bool,
 ) error {
 	mp4Bytes := preview.Data
 	if len(mp4Bytes) == 0 && preview.Path != "" {
@@ -329,7 +330,7 @@ func (c *Cache) StreamMJPEG(
 	windowDur := time.Duration(preview.WindowSec * float64(time.Second))
 	frameInterval := time.Duration(float64(time.Second) / effFPS)
 	targetFrames := max(1, int(math.Round(preview.WindowSec*effFPS)))
-	shouldLoop := sourceDurationSec <= 0 || sourceDurationSec < preview.WindowSec-0.05
+	shouldLoop := loopShort && (sourceDurationSec <= 0 || sourceDurationSec < preview.WindowSec-0.05)
 
 	start := time.Now()
 	windowDeadline := start.Add(windowDur)

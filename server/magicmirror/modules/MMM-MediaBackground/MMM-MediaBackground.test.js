@@ -648,7 +648,7 @@ test("Express route /mediabackground/stream/:id pipes multipart/x-mixed-replace 
 		const receivedChunks = [];
 		await new Promise((resolve, reject) => {
 			const clientReq = http.get(
-				`${proxy.baseUrl}/mediabackground/stream/vid-101?window=12&fps=24&t=999&source=0`,
+				`${proxy.baseUrl}/mediabackground/stream/vid-101?window=12&fps=24&loop=false&t=999&source=0`,
 				(clientRes) => {
 					assert.equal(clientRes.statusCode, 200);
 					assert.equal(clientRes.headers["content-type"], "multipart/x-mixed-replace; boundary=frame");
@@ -673,7 +673,7 @@ test("Express route /mediabackground/stream/:id pipes multipart/x-mixed-replace 
 			});
 		});
 
-		assert.equal(capturedUrl, "/api/assets/vid-101/stream?window=12&fps=24");
+		assert.equal(capturedUrl, "/api/assets/vid-101/stream?window=12&fps=24&loop=false");
 		assert.equal(capturedApiKey, "stream-secret");
 		const combined = Buffer.concat(receivedChunks).toString("latin1");
 		assert.equal(combined.includes("\xff\xd8\x01\xd9"), true);
@@ -736,7 +736,7 @@ test("createSlideshowController resolves Playback Window precedence, paces VIDEO
 	};
 
 	try {
-		// 1. Default Playback Window falls back to slideshowSpeed (15000ms -> 15s), videoFps=30, videoMuted=true
+		// 1. Default Playback Window is 30s (30000ms), shortVideoMode="advance", videoFps=30, videoMuted=true
 		await controller.configure("mod_vid", Object.assign({}, MediaBackgroundModule.defaults, {
 			slideshowSpeed: 15000,
 			sources: [{
@@ -752,17 +752,60 @@ test("createSlideshowController resolves Playback Window precedence, paces VIDEO
 		assert.equal(emitted[0].payload.assetId, "vid-1");
 		assert.equal(emitted[0].payload.type, "VIDEO");
 		assert.equal(emitted[0].payload.durationSeconds, 45.2);
-		assert.equal(emitted[0].payload.playbackWindowSeconds, 15);
+		assert.equal(emitted[0].payload.playbackWindowSeconds, 30);
+		assert.equal(emitted[0].payload.shortVideoMode, "advance");
 		assert.equal(emitted[0].payload.videoFps, 30);
 		assert.equal(emitted[0].payload.videoMuted, true);
 
-		t.mock.timers.tick(14999);
-		assert.equal(emitted.length, 1, "should not advance before 15s default Playback Window");
+		t.mock.timers.tick(29999);
+		assert.equal(emitted.length, 1, "should not advance before 30s default Playback Window");
 		t.mock.timers.tick(1);
 		await flushAsyncPoolReload(2);
 		assert.equal(emitted.length, 2);
 		assert.equal(emitted[1].payload.assetId, "img-2");
 		assert.equal(emitted[1].payload.type, "IMAGE");
+
+		// 1b. shortVideoMode="advance" (default) advances a 18.4s video at 18.4s instead of waiting 30s; shortVideoMode="loop" holds full 30s
+		emitted.length = 0;
+		await controller.configure("mod_vid", Object.assign({}, MediaBackgroundModule.defaults, {
+			slideshowSpeed: 12000,
+			shortVideoMode: "advance",
+			sources: [{
+				url: upstream.baseUrl,
+				apiKey: "vid-key",
+				mode: "memory",
+				mediaType: "VIDEO",
+				sortBy: "none"
+			}]
+		}));
+		assert.equal(emitted[0].payload.assetId, "mem-vid");
+		assert.equal(emitted[0].payload.durationSeconds, 18.4);
+		assert.equal(emitted[0].payload.playbackWindowSeconds, 30);
+		assert.equal(emitted[0].payload.shortVideoMode, "advance");
+		t.mock.timers.tick(18399);
+		assert.equal(emitted.length, 1, "short video should not advance before its 18.4s duration");
+		t.mock.timers.tick(1);
+		await flushAsyncPoolReload(2);
+		assert.equal(emitted.length, 2, "shortVideoMode=advance should advance immediately after 18.4s");
+
+		emitted.length = 0;
+		await controller.configure("mod_vid", Object.assign({}, MediaBackgroundModule.defaults, {
+			slideshowSpeed: 12000,
+			shortVideoMode: "loop",
+			sources: [{
+				url: upstream.baseUrl,
+				apiKey: "vid-key",
+				mode: "memory",
+				mediaType: "VIDEO",
+				sortBy: "none"
+			}]
+		}));
+		assert.equal(emitted[0].payload.shortVideoMode, "loop");
+		t.mock.timers.tick(29999);
+		assert.equal(emitted.length, 1, "shortVideoMode=loop should hold short video until full 30s window");
+		t.mock.timers.tick(1);
+		await flushAsyncPoolReload(2);
+		assert.equal(emitted.length, 2, "shortVideoMode=loop should advance after full 30s window");
 
 		// 2. Explicit videoSlideshowSpeed (20000ms) paces VIDEO at 20s while IMAGE stays at slideshowSpeed (12000ms)
 		emitted.length = 0;
@@ -894,6 +937,7 @@ test("MMM-MediaBackground renders VIDEO slides via <img> MJPEG stream over stati
 		assert.equal(parsedUrl1.pathname, "/mediabackground/stream/vid-trimmed");
 		assert.equal(parsedUrl1.searchParams.get("window"), "12");
 		assert.equal(parsedUrl1.searchParams.get("fps"), "30");
+		assert.equal(parsedUrl1.searchParams.get("loop"), "false");
 		assert.equal(Boolean(parsedUrl1.searchParams.get("t")), true, "expected cache-busting t=<nonce> param");
 
 		img1.onload();

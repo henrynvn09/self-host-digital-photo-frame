@@ -439,6 +439,11 @@ func (s *Server) handleAssetWarm(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func parseLoopQueryParam(r *http.Request) bool {
+	raw := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("loop")))
+	return raw != "false" && raw != "0"
+}
+
 func (s *Server) handleAssetStream(w http.ResponseWriter, r *http.Request) {
 	asset := s.lookupAsset(w, r)
 	if asset == nil {
@@ -450,6 +455,7 @@ func (s *Server) handleAssetStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	windowSec, requestedFPS := parseVideoQueryParams(r)
+	loopShort := parseLoopQueryParam(r)
 
 	sourcePath := filepath.Join(s.libraryDir, filepath.FromSlash(asset.RelPath))
 	videoPreview, err := s.cache.GetOrGenerateVideoPreview(r.Context(), asset.ID, asset.Mtime, sourcePath, windowSec, requestedFPS)
@@ -471,7 +477,7 @@ func (s *Server) handleAssetStream(w http.ResponseWriter, r *http.Request) {
 		flushFn()
 	}
 
-	_ = s.cache.StreamMJPEG(r.Context(), w, flushFn, videoPreview, asset.DurationSec)
+	_ = s.cache.StreamMJPEG(r.Context(), w, flushFn, videoPreview, asset.DurationSec, loopShort)
 }
 
 func (s *Server) serveAssetRendition(

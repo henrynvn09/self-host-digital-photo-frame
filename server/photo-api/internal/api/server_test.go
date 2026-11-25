@@ -1252,6 +1252,18 @@ func TestVideoIndexingSearchBackdropAndMJPEGStream(t *testing.T) {
 		t.Fatalf("expected ~2.5s looped stream duration, got %v", loopElapsed)
 	}
 
+	// 6c-ii. Same short 1.0s@10fps clip with loop=false -> plays once (~10 frames) and stops without looping
+	onceResp := doStream(context.Background(), "/api/assets/"+shortID+"/stream?window=2.5&fps=10&loop=false")
+	if onceResp.StatusCode != http.StatusOK {
+		_ = onceResp.Body.Close()
+		t.Fatalf("expected 200 on non-looping /stream, got %d", onceResp.StatusCode)
+	}
+	onceFrames := readMJPEGFrames(t, onceResp, 0, nil)
+	_ = onceResp.Body.Close()
+	if len(onceFrames) < 8 || len(onceFrames) > 13 {
+		t.Fatalf("expected ~10 single-pass MJPEG frames with loop=false for 1s@10fps clip, got %d", len(onceFrames))
+	}
+
 	// 6d. Verify zero disk writes in memory mode + RAM LRU cache keyed by (id, mtime, window, fps)
 	if _, statErr := os.Stat(filepath.Join(env.dataDir, "cache")); !os.IsNotExist(statErr) {
 		entries, _ := os.ReadDir(filepath.Join(env.dataDir, "cache"))

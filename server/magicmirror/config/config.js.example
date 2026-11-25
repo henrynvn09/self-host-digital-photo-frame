@@ -111,8 +111,9 @@ let config = {
 			position: "fullscreen_below",
 			config: {
 				slideshowSpeed: 15000,
-				videoSlideshowSpeed: null,     // Playback Window in ms (defaults to slideshowSpeed when null)
+				videoSlideshowSpeed: 30000,    // Max video Playback Window in ms (defaults to 30000ms / 30s)
 				maxVideoDurationSeconds: null, // Optional Playback Window override in seconds
+				shortVideoMode: "advance",     // When video < Playback Window: "advance" (play once, then next) or "loop"
 				videoFps: 30,
 				videoMuted: true,
 				prefetchNext: true,            // Lookahead warm Slide N+1 on photo-api while Slide N plays

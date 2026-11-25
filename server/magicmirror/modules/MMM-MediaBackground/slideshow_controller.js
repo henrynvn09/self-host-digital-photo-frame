@@ -4,6 +4,7 @@ const http = require("node:http");
 const https = require("node:https");
 
 const DEFAULT_SLIDESHOW_SPEED_MS = 12000;
+const DEFAULT_VIDEO_SLIDESHOW_SPEED_MS = 30000;
 const DEFAULT_COLD_CACHE_HOLD_MS = 8000;
 const MAX_COLD_CACHE_HOLD_MS = 120000;
 const DEFAULT_WARM_TIMEOUT_MS = 65000;
@@ -11,6 +12,8 @@ const DEFAULT_VIDEO_FPS = 30;
 const MAX_VIDEO_FPS = 30;
 const MIN_VIDEO_WINDOW_MS = 500;
 const MAX_VIDEO_WINDOW_MS = 300000;
+const DEFAULT_SHORT_VIDEO_MODE = "advance";
+const VALID_SHORT_VIDEO_MODES = new Set(["advance", "loop"]);
 const DEFAULT_TRANSITION_SPEED = "1.2s";
 const DEFAULT_DATE_FORMAT = "DD-MM-YYYY dddd HH:mm";
 const DEFAULT_INFO_FIELDS = ["date", "geo", "count", "album"];
@@ -94,6 +97,21 @@ function normalizeVideoFps(value) {
 	return Math.min(MAX_VIDEO_FPS, Math.max(1, Math.trunc(parsed)));
 }
 
+function normalizeShortVideoMode(value) {
+	const raw = String(value ?? "").trim().toLowerCase();
+	return VALID_SHORT_VIDEO_MODES.has(raw) ? raw : DEFAULT_SHORT_VIDEO_MODE;
+}
+
+function resolveEffectiveVideoDelayMs(asset, windowMs, shortVideoMode) {
+	if (shortVideoMode === "advance") {
+		const durationSec = parseAssetDurationSeconds(asset);
+		if (durationSec > 0 && durationSec * 1000 < windowMs) {
+			return Math.max(MIN_VIDEO_WINDOW_MS, Math.round(durationSec * 1000));
+		}
+	}
+	return windowMs;
+}
+
 function normalizeMediaType(source) {
 	const raw = source.mediaType ?? (source.query && source.query.type) ?? "ALL";
 	const upper = String(raw).trim().toUpperCase();
@@ -124,10 +142,7 @@ function normalizeSource(rawSource, baseSource, moduleDefaults, currentYear) {
 
 	const rawFields = merged.infoFields ?? merged.imageInfo;
 	const slideshowSpeed = clampInt(merged.slideshowSpeed, 1000, 86400000, moduleDefaults.slideshowSpeed);
-	const fallbackVideoWindowMs = moduleDefaults.hasExplicitVideoWindow
-		? moduleDefaults.videoWindowMs
-		: slideshowSpeed;
-	const videoWindowMs = resolveVideoWindowMs(merged, fallbackVideoWindowMs);
+	const videoWindowMs = resolveVideoWindowMs(merged, moduleDefaults.videoWindowMs);
 
 	return {
 		url: rawUrl,
@@ -151,10 +166,8 @@ function normalizeSource(rawSource, baseSource, moduleDefaults, currentYear) {
 
 function normalizeConfig(rawConfig = {}, currentYear = new Date().getUTCFullYear()) {
 	const slideshowSpeed = clampInt(rawConfig.slideshowSpeed, 1000, 86400000, DEFAULT_SLIDESHOW_SPEED_MS);
-	const hasExplicitVideoWindow =
-		parsePositiveNumber(rawConfig.maxVideoDurationSeconds) !== null ||
-		parsePositiveNumber(rawConfig.videoSlideshowSpeed) !== null;
-	const videoWindowMs = resolveVideoWindowMs(rawConfig, slideshowSpeed);
+	const videoWindowMs = resolveVideoWindowMs(rawConfig, DEFAULT_VIDEO_SLIDESHOW_SPEED_MS);
+	const shortVideoMode = normalizeShortVideoMode(rawConfig.shortVideoMode);
 	const videoFps = normalizeVideoFps(rawConfig.videoFps);
 	const videoMuted = rawConfig.videoMuted != null ? Boolean(rawConfig.videoMuted) : true;
 	const prefetchNext = rawConfig.prefetchNext != null ? Boolean(rawConfig.prefetchNext) : true;
@@ -191,7 +204,6 @@ function normalizeConfig(rawConfig = {}, currentYear = new Date().getUTCFullYear
 	const moduleDefaults = {
 		slideshowSpeed,
 		videoWindowMs,
-		hasExplicitVideoWindow,
 		dateFormat,
 		infoFields
 	};
@@ -224,6 +236,7 @@ function normalizeConfig(rawConfig = {}, currentYear = new Date().getUTCFullYear
 	return {
 		slideshowSpeed,
 		videoWindowMs,
+		shortVideoMode,
 		videoFps,
 		videoMuted,
 		prefetchNext,
@@ -494,7 +507,7 @@ function buildDisplayPayload(session) {
 	const querySuffix = `?source=${session.activeSourceIndex}`;
 	const exif = asset.exifInfo || {};
 	const isVideo = String(asset.type || "").toUpperCase() === "VIDEO";
-	const windowMs = source.videoWindowMs || session.config.videoWindowMs || DEFAULT_SLIDESHOW_SPEED_MS;
+	const windowMs = source.videoWindowMs || session.config.videoWindowMs || DEFAULT_VIDEO_SLIDESHOW_SPEED_MS;
 	const playbackWindowSeconds = Number((windowMs / 1000).toFixed(3));
 
 	return {
@@ -503,6 +516,7 @@ function buildDisplayPayload(session) {
 		type: isVideo ? "VIDEO" : "IMAGE",
 		durationSeconds: isVideo ? parseAssetDurationSeconds(asset) : 0,
 		playbackWindowSeconds,
+		shortVideoMode: session.config.shortVideoMode,
 		videoFps: session.config.videoFps,
 		videoMuted: session.config.videoMuted,
 		sourceIndex: session.activeSourceIndex,
@@ -562,7 +576,7 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 			};
 		}
 
-		const windowMs = source.videoWindowMs || session.config.videoWindowMs || DEFAULT_SLIDESHOW_SPEED_MS;
+		const windowMs = source.videoWindowMs || session.config.videoWindowMs || DEFAULT_VIDEO_SLIDESHOW_SPEED_MS;
 		const windowSec = Number((windowMs / 1000).toFixed(3));
 		const fps = session.config.videoFps;
 		const warmPath = `api/assets/${encodeURIComponent(asset.id)}/warm?window=${encodeURIComponent(String(windowSec))}&fps=${encodeURIComponent(String(fps))}`;
@@ -680,8 +694,9 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 		const source = session.config.sources[session.activeSourceIndex] || {};
 		const currentAsset = session.assets[session.index];
 		const isVideo = Boolean(currentAsset && String(currentAsset.type || "").toUpperCase() === "VIDEO");
+		const windowMs = source.videoWindowMs || session.config.videoWindowMs || DEFAULT_VIDEO_SLIDESHOW_SPEED_MS;
 		const delayMs = isVideo
-			? (source.videoWindowMs || session.config.videoWindowMs || DEFAULT_SLIDESHOW_SPEED_MS)
+			? resolveEffectiveVideoDelayMs(currentAsset, windowMs, session.config.shortVideoMode)
 			: (source.slideshowSpeed || session.config.slideshowSpeed || DEFAULT_SLIDESHOW_SPEED_MS);
 		session.slideTimer = setTimeout(() => {
 			advance(session.identifier).catch((err) => {
