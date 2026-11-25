@@ -53,6 +53,8 @@ func main() {
 		"video_max_resolution", fmt.Sprintf("%dx%d", cfg.VideoMaxWidth, cfg.VideoMaxHeight),
 		"video_fps", cfg.VideoFPS,
 		"max_concurrent_video_transcodes", cfg.MaxConcurrentVideoTranscode,
+		"min_video_seconds", cfg.MinVideoSeconds,
+		"live_photo_max_seconds", cfg.LivePhotoMaxSeconds,
 		"scan_interval", cfg.ScanInterval.String(),
 		"auth_enabled", cfg.APIKey != "",
 		"uid", os.Getuid(),
@@ -91,7 +93,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	sc := scanner.New(cfg.LibraryDir, cfg.GeoNamesDir, cfg.ExcludePatterns, st, cache)
+	sc := scanner.New(cfg.LibraryDir, cfg.GeoNamesDir, cfg.ExcludePatterns, st, cache, scanner.Options{
+		MinVideoSeconds:     cfg.MinVideoSeconds,
+		LivePhotoMaxSeconds: cfg.LivePhotoMaxSeconds,
+	})
 
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()

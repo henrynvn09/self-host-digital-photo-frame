@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"image"
 	_ "image/jpeg"
@@ -13,9 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
-	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -48,7 +45,16 @@ var supportedVideoExts = map[string]bool{
 	".webm": true,
 }
 
-const ffprobeTimeout = 15 * time.Second
+const (
+	ffprobeTimeout             = 15 * time.Second
+	DefaultMinVideoSeconds     = 3.0
+	DefaultLivePhotoMaxSeconds = 3.5
+)
+
+type Options struct {
+	MinVideoSeconds     float64
+	LivePhotoMaxSeconds float64
+}
 
 var (
 	reFilenameDate  = regexp.MustCompile(`(?:^|[^0-9])(19\d{2}|20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)(?:[^0-9]|$)`)
@@ -66,24 +72,74 @@ type Stats struct {
 	DurationMs int64 `json:"durationMs"`
 }
 
-type Scanner struct {
-	libraryDir      string
-	geoNamesDir     string
-	excludePatterns []string
-	store           *store.Store
-	cache           *preview.Cache
-
-	mu sync.Mutex
+type probedVideoDuration struct {
+	mtime       int64
+	size        int64
+	durationSec float64
 }
 
-func New(libraryDir, geoNamesDir string, excludePatterns []string, st *store.Store, cache *preview.Cache) *Scanner {
-	return &Scanner{
-		libraryDir:      libraryDir,
-		geoNamesDir:     geoNamesDir,
-		excludePatterns: excludePatterns,
-		store:           st,
-		cache:           cache,
+type scanCandidate struct {
+	fullPath  string
+	relSlash  string
+	dirSlash  string
+	stemLower string
+	mtime     int64
+	size      int64
+	modTime   time.Time
+	isVid     bool
+}
+
+type Scanner struct {
+	libraryDir          string
+	geoNamesDir         string
+	excludePatterns     []string
+	minVideoSeconds     float64
+	livePhotoMaxSeconds float64
+	store               *store.Store
+	cache               *preview.Cache
+
+	mu     sync.Mutex
+	probed map[string]probedVideoDuration
+}
+
+func New(libraryDir, geoNamesDir string, excludePatterns []string, st *store.Store, cache *preview.Cache, opts ...Options) *Scanner {
+	minVid := DefaultMinVideoSeconds
+	liveMax := DefaultLivePhotoMaxSeconds
+	if len(opts) > 0 {
+		if opts[0].MinVideoSeconds > 0 {
+			minVid = opts[0].MinVideoSeconds
+		}
+		if opts[0].LivePhotoMaxSeconds > 0 {
+			liveMax = opts[0].LivePhotoMaxSeconds
+		}
 	}
+	return &Scanner{
+		libraryDir:          libraryDir,
+		geoNamesDir:         geoNamesDir,
+		excludePatterns:     excludePatterns,
+		minVideoSeconds:     minVid,
+		livePhotoMaxSeconds: liveMax,
+		store:               st,
+		cache:               cache,
+		probed:              make(map[string]probedVideoDuration),
+	}
+}
+
+func (s *Scanner) shouldExcludeVideo(durationSec float64, hasSiblingImage bool) bool {
+	if durationSec < s.minVideoSeconds {
+		return true
+	}
+	if hasSiblingImage && durationSec <= s.livePhotoMaxSeconds {
+		return true
+	}
+	return false
+}
+
+func fileDirAndLowerStem(relSlash, baseName string) (string, string) {
+	dir := filepath.ToSlash(filepath.Dir(relSlash))
+	ext := filepath.Ext(baseName)
+	stem := strings.ToLower(strings.TrimSuffix(baseName, ext))
+	return dir, stem
 }
 
 func (s *Scanner) Scan(ctx context.Context) (Stats, error) {
@@ -114,6 +170,9 @@ func (s *Scanner) Scan(ctx context.Context) (Stats, error) {
 		}
 		return geoResolver
 	}
+
+	var candidates []scanCandidate
+	imageStems := make(map[string]map[string]bool)
 
 	err = filepath.WalkDir(s.libraryDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if ctx.Err() != nil {
@@ -162,34 +221,104 @@ func (s *Scanner) Scan(ctx context.Context) (Stats, error) {
 			return nil
 		}
 
-		seen[relSlash] = true
-		mtime := info.ModTime().Unix()
-		size := info.Size()
-
-		if prev, ok := existing[relSlash]; ok && prev.Mtime == mtime && prev.Size == size {
-			stats.Skipped++
-			return nil
-		}
-
-		var asset store.Asset
-		if isVid {
-			var probeErr error
-			asset, probeErr = buildVideoAsset(ctx, path, relSlash, mtime, size, info.ModTime())
-			if probeErr != nil {
-				slog.Warn("ffprobe video asset failed", "path", relSlash, "error", probeErr)
-				stats.Errors++
-				return nil
+		dirSlash, stemLower := fileDirAndLowerStem(relSlash, name)
+		if isImg {
+			stems := imageStems[dirSlash]
+			if stems == nil {
+				stems = make(map[string]bool)
+				imageStems[dirSlash] = stems
 			}
-		} else {
-			asset = buildAsset(path, relSlash, mtime, size, info.ModTime(), loadGeo)
-		}
-		if err := s.store.UpsertAsset(ctx, asset); err != nil {
-			slog.Warn("upsert asset failed", "path", relSlash, "error", err)
-			stats.Errors++
-			return nil
+			stems[stemLower] = true
 		}
 
-		if prev, ok := existing[relSlash]; ok {
+		candidates = append(candidates, scanCandidate{
+			fullPath:  path,
+			relSlash:  relSlash,
+			dirSlash:  dirSlash,
+			stemLower: stemLower,
+			mtime:     info.ModTime().Unix(),
+			size:      info.Size(),
+			modTime:   info.ModTime(),
+			isVid:     isVid,
+		})
+		return nil
+	})
+	if err != nil {
+		return stats, err
+	}
+
+	nextProbed := make(map[string]probedVideoDuration)
+
+	for _, c := range candidates {
+		if ctx.Err() != nil {
+			return stats, ctx.Err()
+		}
+
+		prev, inExisting := existing[c.relSlash]
+		var asset store.Asset
+
+		if !c.isVid {
+			seen[c.relSlash] = true
+			if inExisting && prev.Mtime == c.mtime && prev.Size == c.size {
+				stats.Skipped++
+				continue
+			}
+			asset = buildAsset(c.fullPath, c.relSlash, c.mtime, c.size, c.modTime, loadGeo)
+		} else {
+			hasSiblingImage := imageStems[c.dirSlash][c.stemLower]
+			if inExisting && prev.Mtime == c.mtime && prev.Size == c.size && prev.DurationSec > 0 {
+				nextProbed[c.relSlash] = probedVideoDuration{
+					mtime:       c.mtime,
+					size:        c.size,
+					durationSec: prev.DurationSec,
+				}
+				if s.shouldExcludeVideo(prev.DurationSec, hasSiblingImage) {
+					// Leave unseen so the newly excluded video is pruned from SQLite and evicted from cache below.
+					continue
+				}
+				seen[c.relSlash] = true
+				stats.Skipped++
+				continue
+			}
+
+			if !inExisting {
+				if memo, ok := s.probed[c.relSlash]; ok && memo.mtime == c.mtime && memo.size == c.size {
+					if s.shouldExcludeVideo(memo.durationSec, hasSiblingImage) {
+						nextProbed[c.relSlash] = memo
+						continue
+					}
+				}
+			}
+
+			meta, probeErr := probeVideo(ctx, c.fullPath)
+			if probeErr != nil {
+				slog.Warn("ffprobe video asset failed", "path", c.relSlash, "error", probeErr)
+				stats.Errors++
+				if inExisting {
+					seen[c.relSlash] = true
+				}
+				continue
+			}
+
+			nextProbed[c.relSlash] = probedVideoDuration{
+				mtime:       c.mtime,
+				size:        c.size,
+				durationSec: meta.durationSec,
+			}
+			if s.shouldExcludeVideo(meta.durationSec, hasSiblingImage) {
+				continue
+			}
+
+			seen[c.relSlash] = true
+			asset = buildVideoAssetFromMeta(meta, c.relSlash, c.mtime, c.size, c.modTime, loadGeo)
+		}
+
+		if err := s.store.UpsertAsset(ctx, asset); err != nil {
+			slog.Warn("upsert asset failed", "path", c.relSlash, "error", err)
+			stats.Errors++
+			continue
+		}
+		if inExisting {
 			stats.Updated++
 			if s.cache != nil {
 				s.cache.Evict(prev.ID)
@@ -197,11 +326,9 @@ func (s *Scanner) Scan(ctx context.Context) (Stats, error) {
 		} else {
 			stats.Added++
 		}
-		return nil
-	})
-	if err != nil {
-		return stats, err
 	}
+
+	s.probed = nextProbed
 
 	var toDelete []string
 	for relPath, meta := range existing {
@@ -313,129 +440,6 @@ func buildAsset(fullPath, relSlash string, mtime, size int64, modTime time.Time,
 	a.TakenMonth = int(a.TakenAt.UTC().Month())
 	a.TakenDay = a.TakenAt.UTC().Day()
 	return a
-}
-
-type ffprobeSideData struct {
-	SideDataType string   `json:"side_data_type"`
-	Rotation     *float64 `json:"rotation"`
-}
-
-type ffprobeStream struct {
-	CodecType    string            `json:"codec_type"`
-	Width        int               `json:"width"`
-	Height       int               `json:"height"`
-	Duration     string            `json:"duration"`
-	Tags         map[string]string `json:"tags"`
-	SideDataList []ffprobeSideData `json:"side_data_list"`
-}
-
-type ffprobeFormat struct {
-	Duration string            `json:"duration"`
-	Tags     map[string]string `json:"tags"`
-}
-
-type ffprobePayload struct {
-	Streams []ffprobeStream `json:"streams"`
-	Format  ffprobeFormat   `json:"format"`
-}
-
-type videoProbeMeta struct {
-	durationSec float64
-	width       int
-	height      int
-}
-
-func probeVideo(ctx context.Context, fullPath string) (videoProbeMeta, error) {
-	probeCtx, cancel := context.WithTimeout(ctx, ffprobeTimeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(
-		probeCtx,
-		"ffprobe",
-		"-v", "quiet",
-		"-print_format", "json",
-		"-show_format",
-		"-show_streams",
-		fullPath,
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		return videoProbeMeta{}, fmt.Errorf("ffprobe %s: %w", fullPath, err)
-	}
-
-	var payload ffprobePayload
-	if err := json.Unmarshal(out, &payload); err != nil {
-		return videoProbeMeta{}, fmt.Errorf("decode ffprobe json: %w", err)
-	}
-
-	var meta videoProbeMeta
-	if d, err := strconv.ParseFloat(strings.TrimSpace(payload.Format.Duration), 64); err == nil && d > 0 && !math.IsNaN(d) && !math.IsInf(d, 0) {
-		meta.durationSec = d
-	}
-
-	for _, st := range payload.Streams {
-		if st.CodecType != "video" {
-			continue
-		}
-		w, h := st.Width, st.Height
-		if meta.durationSec <= 0 {
-			if d, err := strconv.ParseFloat(strings.TrimSpace(st.Duration), 64); err == nil && d > 0 && !math.IsNaN(d) && !math.IsInf(d, 0) {
-				meta.durationSec = d
-			}
-		}
-		rot := extractStreamRotation(st)
-		if rot == 90 || rot == 270 {
-			w, h = h, w
-		}
-		meta.width = w
-		meta.height = h
-		break
-	}
-	return meta, nil
-}
-
-func extractStreamRotation(st ffprobeStream) int {
-	for _, sd := range st.SideDataList {
-		if sd.Rotation != nil {
-			deg := ((int(math.Round(*sd.Rotation)) % 360) + 360) % 360
-			return deg
-		}
-	}
-	for k, v := range st.Tags {
-		if strings.EqualFold(k, "rotate") {
-			if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
-				return ((int(math.Round(f)) % 360) + 360) % 360
-			}
-		}
-	}
-	return 0
-}
-
-func buildVideoAsset(ctx context.Context, fullPath, relSlash string, mtime, size int64, modTime time.Time) (store.Asset, error) {
-	meta, err := probeVideo(ctx, fullPath)
-	if err != nil {
-		return store.Asset{}, err
-	}
-
-	a := store.Asset{
-		ID:          DeterministicUUID(relSlash),
-		RelPath:     relSlash,
-		MediaType:   "VIDEO",
-		DurationSec: meta.durationSec,
-		Mtime:       mtime,
-		Size:        size,
-		Album:       deriveAlbum(relSlash),
-		Orientation: 1,
-		Width:       meta.width,
-		Height:      meta.height,
-		IndexedAt:   time.Now().UTC(),
-	}
-
-	a.TakenAt = resolveDate(time.Time{}, relSlash, modTime)
-	a.TakenYear = a.TakenAt.UTC().Year()
-	a.TakenMonth = int(a.TakenAt.UTC().Month())
-	a.TakenDay = a.TakenAt.UTC().Day()
-	return a, nil
 }
 
 func readImageDimensions(path string) (int, int) {

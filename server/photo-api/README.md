@@ -5,7 +5,7 @@ Lightweight, high-performance pure-Go media indexing and serving service built f
 ## Features
 - **Read-Only Library (`:ro`)**: Never modifies or deletes original `Asset`s.
 - **Synology Hygiene**: Runs as non-root `PUID:PGID` (`1026:100`) and automatically skips `@eaDir`, `#recycle`, hidden `.*` directories, and custom `EXCLUDE_PATTERNS`.
-- **Incremental `Scan`**: Diffs photo and video `Asset`s by `(relative_path, mtime, size)` on startup, periodic interval (`SCAN_INTERVAL`), and manual `POST /api/admin/scan`, probing `.mp4`/`.mov`/`.m4v`/`.webm` via `ffprobe` for duration and auto-rotated display dimensions.
+- **Incremental `Scan`**: Diffs photo and video `Asset`s by `(relative_path, mtime, size)` on startup, periodic interval (`SCAN_INTERVAL`), and manual `POST /api/admin/scan`, probing `.mp4`/`.mov`/`.m4v`/`.webm` via `ffprobe` for duration, auto-rotated display dimensions, QuickTime/MP4 creation timestamps, and ISO-6709 GPS coordinates while filtering out micro-clips (`< MIN_VIDEO_SECONDS`) and paired Live Photo companion clips (`<= LIVE_PHOTO_MAX_SECONDS`).
 - **Offline Worldwide Geocoding**: Bundles GeoNames `cities1000` (~150k+ cities) into the Docker image and unloads the index between scans to keep idle RAM ~12–20MB.
 - **Lazy 2K Photo & Silent 30 fps Video `Preview`s + 1GB In-Memory LRU Cache**: Scales JPEG/PNG/WebP/HEIC photos to 2560×2560 JPEG and transcodes bounded video `Playback Window`s into silent, auto-rotated, unpadded `1080p`-max `min(30, source_fps)` H.264 clips in the 1 GB in-memory LRU (`CACHE_MODE=memory`, **0 disk writes**), pacing `multipart/x-mixed-replace` MJPEG frames (trimming longer clips and looping shorter clips server-side).
 
@@ -30,6 +30,8 @@ Lightweight, high-performance pure-Go media indexing and serving service built f
 | `VIDEO_MAX_HEIGHT` | `1080` | Max unpadded landscape video `Preview` height (`1080×1920` portrait) |
 | `VIDEO_FPS` | `30` | Maximum video frame rate cap (`min(30, VIDEO_FPS, source_fps)`) |
 | `MAX_CONCURRENT_VIDEO_TRANSCODES` | `1` | Max concurrent `ffmpeg` video transcodes (`-threads 2`) |
+| `MIN_VIDEO_SECONDS` | `3.0` | Minimum video duration in seconds; shorter micro-clips are skipped and pruned |
+| `LIVE_PHOTO_MAX_SECONDS` | `3.5` | Max duration in seconds for excluding paired Live Photo companion clips sharing directory and filename stem with a sibling image |
 | `PREBAKE_BLUR` | `false` | When `true`, pre-composites blurred background bars on the NAS |
 | `FRAME_WIDTH` | `1440` | Target frame width when `PREBAKE_BLUR=true` |
 | `FRAME_HEIGHT` | `2560` | Target frame height when `PREBAKE_BLUR=true` |

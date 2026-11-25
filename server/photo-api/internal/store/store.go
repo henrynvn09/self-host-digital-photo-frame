@@ -38,9 +38,11 @@ type Asset struct {
 }
 
 type PathMeta struct {
-	ID    string
-	Mtime int64
-	Size  int64
+	ID          string
+	MediaType   string
+	DurationSec float64
+	Mtime       int64
+	Size        int64
 }
 
 type SearchParams struct {
@@ -167,7 +169,7 @@ func (s *Store) existingColumns(table string) (map[string]bool, error) {
 }
 
 func (s *Store) ListPathMeta(ctx context.Context) (map[string]PathMeta, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT rel_path, id, mtime, size FROM assets`)
+	rows, err := s.db.QueryContext(ctx, `SELECT rel_path, id, media_type, duration_sec, mtime, size FROM assets`)
 	if err != nil {
 		return nil, err
 	}
@@ -177,9 +179,10 @@ func (s *Store) ListPathMeta(ctx context.Context) (map[string]PathMeta, error) {
 	for rows.Next() {
 		var relPath string
 		var pm PathMeta
-		if err := rows.Scan(&relPath, &pm.ID, &pm.Mtime, &pm.Size); err != nil {
+		if err := rows.Scan(&relPath, &pm.ID, &pm.MediaType, &pm.DurationSec, &pm.Mtime, &pm.Size); err != nil {
 			return nil, err
 		}
+		pm.MediaType = normalizeStoredMediaType(pm.MediaType)
 		out[relPath] = pm
 	}
 	return out, rows.Err()

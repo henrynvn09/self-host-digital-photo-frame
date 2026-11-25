@@ -72,7 +72,7 @@ func setupTestEnv(t *testing.T, cacheMaxMB int64, cacheMode ...string) *testEnv 
 		t.Fatalf("new cache: %v", err)
 	}
 
-	sc := scanner.New(photosDir, geoDir, []string{"Screenshots"}, st, cache)
+	sc := scanner.New(photosDir, geoDir, []string{"Screenshots"}, st, cache, scanner.Options{MinVideoSeconds: 0.5})
 	srv := api.NewServer(photosDir, "secret-key", st, sc, cache)
 
 	return &testEnv{

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -8,19 +9,19 @@ import (
 )
 
 type Config struct {
-	Port            string
-	LibraryDir      string
-	DataDir         string
-	GeoNamesDir     string
-	APIKey          string
-	ScanInterval    time.Duration
-	ExcludePatterns []string
-	MaxWidth        int
-	MaxHeight       int
-	JPEGQuality          int
-	CacheMaxMB           int64
-	CacheMode            string
-	PrebakeBlur          bool
+	Port                        string
+	LibraryDir                  string
+	DataDir                     string
+	GeoNamesDir                 string
+	APIKey                      string
+	ScanInterval                time.Duration
+	ExcludePatterns             []string
+	MaxWidth                    int
+	MaxHeight                   int
+	JPEGQuality                 int
+	CacheMaxMB                  int64
+	CacheMode                   string
+	PrebakeBlur                 bool
 	FrameWidth                  int
 	FrameHeight                 int
 	MaxConcurrentDecodes        int
@@ -28,6 +29,8 @@ type Config struct {
 	VideoMaxHeight              int
 	VideoFPS                    int
 	MaxConcurrentVideoTranscode int
+	MinVideoSeconds             float64
+	LivePhotoMaxSeconds         float64
 }
 
 func Load() Config {
@@ -52,6 +55,8 @@ func Load() Config {
 		VideoMaxHeight:              getEnvInt("VIDEO_MAX_HEIGHT", 1080),
 		VideoFPS:                    getEnvInt("VIDEO_FPS", 30),
 		MaxConcurrentVideoTranscode: getEnvInt("MAX_CONCURRENT_VIDEO_TRANSCODES", 1),
+		MinVideoSeconds:             getEnvFloat("MIN_VIDEO_SECONDS", 3.0),
+		LivePhotoMaxSeconds:         getEnvFloat("LIVE_PHOTO_MAX_SECONDS", 3.5),
 	}
 }
 
@@ -66,6 +71,15 @@ func getEnvInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return n
+		}
+	}
+	return fallback
+}
+
+func getEnvFloat(key string, fallback float64) float64 {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) && f > 0 {
+			return f
 		}
 	}
 	return fallback
