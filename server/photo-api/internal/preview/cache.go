@@ -36,12 +36,11 @@ type Options struct {
 	VideoMaxHeight              int
 	VideoFPS                    int
 	MaxConcurrentVideoTranscode int
-	NegativeCacheTTL            time.Duration
 }
 
 const defaultNegativeCacheTTL = 10 * time.Minute
 
-// ErrMediaUnreadable indicates that a source media file is missing, unreadable, truncated, or corrupt.
+// ErrMediaUnreadable indicates that a source Asset is missing, unreadable, truncated, or corrupt.
 var ErrMediaUnreadable = errors.New("media asset unreadable or corrupt")
 
 type negCacheEntry struct {
@@ -235,10 +234,6 @@ func NewCache(dataDir string, opts Options) (*Cache, error) {
 	if maxVideoTranscode <= 0 {
 		maxVideoTranscode = 1
 	}
-	negTTL := opts.NegativeCacheTTL
-	if negTTL <= 0 {
-		negTTL = defaultNegativeCacheTTL
-	}
 
 	maxBytes := opts.MaxMB * 1024 * 1024
 	return &Cache{
@@ -258,7 +253,7 @@ func NewCache(dataDir string, opts Options) (*Cache, error) {
 		sem:            make(chan struct{}, maxConcurrent),
 		videoSem:       make(chan struct{}, maxVideoTranscode),
 		negItems:       make(map[string]negCacheEntry),
-		negTTL:         negTTL,
+		negTTL:         defaultNegativeCacheTTL,
 	}, nil
 }
 
@@ -304,16 +299,33 @@ func (c *Cache) kindPath(assetID string, kind RenditionKind) string {
 	return filepath.Join(c.cacheDir, cachePrefixDir(assetID), kind.Filename(assetID))
 }
 
+type cacheTarget struct {
+	assetID    string
+	sourcePath string
+	cacheKey   string
+	targetPath string
+}
+
 // GetOrGenerate returns the preview JPEG for the asset (either in-memory bytes or disk file path).
 func (c *Cache) GetOrGenerate(ctx context.Context, assetID, sourcePath string, orientation int) (Result, error) {
-	return c.getOrCreate(ctx, assetID, sourcePath, PreviewKind.CacheKey(assetID), c.cachePath(assetID), func(genCtx context.Context) ([]byte, error) {
+	return c.getOrCreate(ctx, cacheTarget{
+		assetID:    assetID,
+		sourcePath: sourcePath,
+		cacheKey:   PreviewKind.CacheKey(assetID),
+		targetPath: c.cachePath(assetID),
+	}, func(genCtx context.Context) ([]byte, error) {
 		return c.generateBytes(genCtx, sourcePath, orientation)
 	})
 }
 
 // GetOrGenerateBackdrop returns a compact, pre-blurred, ~35%-darkened JPEG backdrop for the asset.
 func (c *Cache) GetOrGenerateBackdrop(ctx context.Context, assetID, sourcePath string, orientation int) (Result, error) {
-	return c.getOrCreate(ctx, assetID, sourcePath, BackdropKind.CacheKey(assetID), c.backdropCachePath(assetID), func(genCtx context.Context) ([]byte, error) {
+	return c.getOrCreate(ctx, cacheTarget{
+		assetID:    assetID,
+		sourcePath: sourcePath,
+		cacheKey:   BackdropKind.CacheKey(assetID),
+		targetPath: c.backdropCachePath(assetID),
+	}, func(genCtx context.Context) ([]byte, error) {
 		return c.generateBackdropBytes(genCtx, sourcePath, orientation)
 	})
 }
@@ -409,112 +421,76 @@ func (c *Cache) runDetachedGenerate(assetID, sourcePath string, generate func(ge
 	return data, nil
 }
 
-func (c *Cache) getOrCreate(
-	ctx context.Context,
-	assetID, sourcePath, cacheKey, targetPath string,
-	generate func(genCtx context.Context) ([]byte, error),
-) (Result, error) {
+func (c *Cache) lookupCached(t cacheTarget) (Result, bool) {
 	switch c.mode {
 	case "disk":
-		return c.getOrGenerateDisk(ctx, assetID, sourcePath, cacheKey, targetPath, generate)
+		if info, err := os.Stat(t.targetPath); err == nil && info.Size() > 0 {
+			now := time.Now()
+			_ = os.Chtimes(t.targetPath, now, now)
+			return Result{Path: t.targetPath}, true
+		}
+		return Result{}, false
 	case "hybrid":
-		return c.getOrGenerateHybrid(ctx, assetID, sourcePath, cacheKey, targetPath, generate)
+		if data, ok := c.memLRU.Get(t.cacheKey); ok && len(data) > 0 {
+			return Result{Data: data, Path: t.targetPath}, true
+		}
+		if info, err := os.Stat(t.targetPath); err == nil && info.Size() > 0 {
+			if data, err := os.ReadFile(t.targetPath); err == nil && len(data) > 0 {
+				c.memLRU.Put(t.cacheKey, data)
+				now := time.Now()
+				_ = os.Chtimes(t.targetPath, now, now)
+				return Result{Data: data, Path: t.targetPath}, true
+			}
+		}
+		return Result{}, false
 	default:
-		return c.getOrGenerateMemory(ctx, assetID, sourcePath, cacheKey, generate)
+		if data, ok := c.memLRU.Get(t.cacheKey); ok && len(data) > 0 {
+			return Result{Data: data}, true
+		}
+		return Result{}, false
 	}
 }
 
-func (c *Cache) getOrGenerateMemory(
-	ctx context.Context,
-	assetID, sourcePath, cacheKey string,
-	generate func(genCtx context.Context) ([]byte, error),
-) (Result, error) {
-	if data, ok := c.memLRU.Get(cacheKey); ok && len(data) > 0 {
-		return Result{Data: data}, nil
-	}
-	if negErr := c.checkNegative(assetID, sourcePath); negErr != nil {
-		return Result{}, negErr
-	}
-
-	return c.waitSingleflight(ctx, cacheKey, func() (Result, error) {
-		if data, ok := c.memLRU.Get(cacheKey); ok && len(data) > 0 {
-			return Result{Data: data}, nil
-		}
-		data, err := c.runDetachedGenerate(assetID, sourcePath, generate)
-		if err != nil {
+func (c *Cache) storeCached(t cacheTarget, data []byte) (Result, error) {
+	switch c.mode {
+	case "disk":
+		if err := c.writeToDisk(t.targetPath, data); err != nil {
 			return Result{}, err
 		}
-		c.memLRU.Put(cacheKey, data)
+		c.enforceDiskLimit(t.targetPath)
+		return Result{Path: t.targetPath}, nil
+	case "hybrid":
+		c.memLRU.Put(t.cacheKey, data)
+		_ = c.writeToDisk(t.targetPath, data)
+		c.enforceDiskLimit(t.targetPath)
+		return Result{Data: data, Path: t.targetPath}, nil
+	default:
+		c.memLRU.Put(t.cacheKey, data)
 		return Result{Data: data}, nil
-	})
+	}
 }
 
-func (c *Cache) getOrGenerateDisk(
+func (c *Cache) getOrCreate(
 	ctx context.Context,
-	assetID, sourcePath, cacheKey, target string,
+	t cacheTarget,
 	generate func(genCtx context.Context) ([]byte, error),
 ) (Result, error) {
-	if info, err := os.Stat(target); err == nil && info.Size() > 0 {
-		now := time.Now()
-		_ = os.Chtimes(target, now, now)
-		return Result{Path: target}, nil
+	if res, ok := c.lookupCached(t); ok {
+		return res, nil
 	}
-	if negErr := c.checkNegative(assetID, sourcePath); negErr != nil {
+	if negErr := c.checkNegative(t.assetID, t.sourcePath); negErr != nil {
 		return Result{}, negErr
 	}
 
-	return c.waitSingleflight(ctx, cacheKey, func() (Result, error) {
-		if info, err := os.Stat(target); err == nil && info.Size() > 0 {
-			now := time.Now()
-			_ = os.Chtimes(target, now, now)
-			return Result{Path: target}, nil
+	return c.waitSingleflight(ctx, t.cacheKey, func() (Result, error) {
+		if res, ok := c.lookupCached(t); ok {
+			return res, nil
 		}
-		data, err := c.runDetachedGenerate(assetID, sourcePath, generate)
+		data, err := c.runDetachedGenerate(t.assetID, t.sourcePath, generate)
 		if err != nil {
 			return Result{}, err
 		}
-		if err := c.writeToDisk(target, data); err != nil {
-			return Result{}, err
-		}
-		c.enforceDiskLimit(target)
-		return Result{Path: target}, nil
-	})
-}
-
-func (c *Cache) getOrGenerateHybrid(
-	ctx context.Context,
-	assetID, sourcePath, cacheKey, target string,
-	generate func(genCtx context.Context) ([]byte, error),
-) (Result, error) {
-	if data, ok := c.memLRU.Get(cacheKey); ok && len(data) > 0 {
-		return Result{Data: data}, nil
-	}
-
-	if info, err := os.Stat(target); err == nil && info.Size() > 0 {
-		data, err := os.ReadFile(target)
-		if err == nil && len(data) > 0 {
-			c.memLRU.Put(cacheKey, data)
-			now := time.Now()
-			_ = os.Chtimes(target, now, now)
-			return Result{Data: data, Path: target}, nil
-		}
-	}
-	if negErr := c.checkNegative(assetID, sourcePath); negErr != nil {
-		return Result{}, negErr
-	}
-
-	return c.waitSingleflight(ctx, cacheKey, func() (Result, error) {
-		if data, ok := c.memLRU.Get(cacheKey); ok && len(data) > 0 {
-			return Result{Data: data, Path: target}, nil
-		}
-		data, err := c.runDetachedGenerate(assetID, sourcePath, generate)
-		if err != nil {
-			return Result{}, err
-		}
-		c.memLRU.Put(cacheKey, data)
-		_ = c.writeToDisk(target, data)
-		c.enforceDiskLimit(target)
-		return Result{Data: data, Path: target}, nil
+		return c.storeCached(t, data)
 	})
 }
 

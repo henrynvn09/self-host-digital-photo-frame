@@ -45,7 +45,7 @@ Lightweight, high-performance pure-Go media indexing and serving service built f
 - `GET /api/assets/{id}` — Single `Asset` metadata (`type`, `durationSeconds`, `exifInfo`, `albumName`)
 - `GET /api/assets/{id}/thumbnail` — Cached 2K EXIF-oriented JPEG `Preview` (poster frame for `VIDEO` `Asset`s)
 - `GET /api/assets/{id}/backdrop` — Cached compact (`360×640`) pre-blurred, ~35%-darkened JPEG `Backdrop`
-- `POST /api/assets/{id}/warm?window=<sec>&fps=<fps>` — Lookahead cache warm for upcoming `Asset` (`Backdrop` + bounded `Preview`, deduplicated via singleflight with short-TTL negative caching on unreadable files)
+- `POST /api/assets/{id}/warm?window=<sec>&fps=<fps>` — Lookahead cache warm for upcoming `Asset` (`Backdrop` + bounded `Preview`, deduplicated via singleflight with short-TTL negative caching on unreadable Assets)
 - `GET /api/assets/{id}/stream?window=<sec>&fps=<fps>` — Server-paced `multipart/x-mixed-replace` MJPEG video stream across the `Playback Window`
 - `POST /api/admin/scan` — Trigger an immediate incremental `Scan`
 

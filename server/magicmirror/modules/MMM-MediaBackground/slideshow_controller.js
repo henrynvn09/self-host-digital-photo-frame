@@ -273,8 +273,12 @@ function mergeServerSecrets(clientConfig, serverConfig) {
 	return merged;
 }
 
-function requestJson(baseUrl, path, { method = "POST", apiKey = "", body = null, timeout = DEFAULT_TIMEOUT_MS } = {}) {
+function requestJson(baseUrl, path, { method = "POST", apiKey = "", body = null, timeout = DEFAULT_TIMEOUT_MS, signal = null } = {}) {
 	return new Promise((resolve, reject) => {
+		if (signal && signal.aborted) {
+			reject(new Error("aborted"));
+			return;
+		}
 		let target;
 		try {
 			target = new URL(path, baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
@@ -293,10 +297,27 @@ function requestJson(baseUrl, path, { method = "POST", apiKey = "", body = null,
 		if (payloadBuf) {
 			headers["Content-Type"] = "application/json";
 			headers["Content-Length"] = String(payloadBuf.length);
+		} else if (method === "POST") {
+			headers["Content-Length"] = "0";
 		}
 		if (apiKey) {
 			headers["x-api-key"] = apiKey;
 		}
+
+		let settled = false;
+		const onAbort = () => {
+			if (!req.destroyed) {
+				req.destroy(new Error("aborted"));
+			}
+		};
+		const finish = (fn, val) => {
+			if (settled) return;
+			settled = true;
+			if (signal) {
+				signal.removeEventListener("abort", onAbort);
+			}
+			fn(val);
+		};
 
 		const req = transport.request(target, { method, headers, timeout }, (res) => {
 			const chunks = [];
@@ -304,21 +325,25 @@ function requestJson(baseUrl, path, { method = "POST", apiKey = "", body = null,
 			res.on("end", () => {
 				const rawText = Buffer.concat(chunks).toString("utf8");
 				if (res.statusCode < 200 || res.statusCode >= 300) {
-					reject(new Error(`HTTP ${res.statusCode} from ${target.pathname}: ${rawText.slice(0, 200)}`));
+					finish(reject, new Error(`HTTP ${res.statusCode} from ${target.pathname}: ${rawText.slice(0, 200)}`));
 					return;
 				}
 				try {
-					resolve(rawText.trim() ? JSON.parse(rawText) : null);
+					finish(resolve, rawText.trim() ? JSON.parse(rawText) : null);
 				} catch (parseErr) {
-					reject(new Error(`Invalid JSON from ${target.pathname}: ${parseErr.message}`));
+					finish(reject, new Error(`Invalid JSON from ${target.pathname}: ${parseErr.message}`));
 				}
 			});
+			res.on("error", (err) => finish(reject, err));
 		});
 
+		if (signal) {
+			signal.addEventListener("abort", onAbort, { once: true });
+		}
 		req.on("timeout", () => {
 			req.destroy(new Error(`Timeout after ${timeout}ms requesting ${target.pathname}`));
 		});
-		req.on("error", reject);
+		req.on("error", (err) => finish(reject, err));
 		if (payloadBuf) {
 			req.write(payloadBuf);
 		}
@@ -541,46 +566,13 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 		const windowSec = Number((windowMs / 1000).toFixed(3));
 		const fps = session.config.videoFps;
 		const warmPath = `api/assets/${encodeURIComponent(asset.id)}/warm?window=${encodeURIComponent(String(windowSec))}&fps=${encodeURIComponent(String(fps))}`;
-
-		let target;
-		try {
-			const baseUrl = source.url.endsWith("/") ? source.url : `${source.url}/`;
-			target = new URL(warmPath, baseUrl);
-		} catch (err) {
-			return {
-				assetId: asset.id,
-				status: "failed",
-				error: err.message,
-				promise: Promise.resolve({ ok: false, error: err.message }),
-				abort() {}
-			};
-		}
+		const reqTimeout = Math.max(source.timeout || DEFAULT_TIMEOUT_MS, DEFAULT_WARM_TIMEOUT_MS);
+		const abortController = new AbortController();
 
 		let resolvePromise;
 		const promise = new Promise((resolve) => {
 			resolvePromise = resolve;
 		});
-
-		const entry = {
-			assetId: asset.id,
-			status: "pending",
-			error: null,
-			req: null,
-			promise,
-			abort(reason = "aborted") {
-				if (entry.status !== "pending") {
-					return;
-				}
-				entry.status = "failed";
-				entry.error = reason;
-				const activeReq = entry.req;
-				entry.req = null;
-				if (activeReq && !activeReq.destroyed) {
-					activeReq.destroy();
-				}
-				resolvePromise({ ok: false, error: reason });
-			}
-		};
 
 		const finalize = (ok, errMsg = null) => {
 			if (entry.status !== "pending") {
@@ -588,52 +580,42 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 			}
 			entry.status = ok ? "warm" : "failed";
 			entry.error = errMsg;
-			entry.req = null;
 			resolvePromise(ok ? { ok: true } : { ok: false, error: errMsg });
 		};
 
-		const transport = target.protocol === "https:" ? https : http;
-		const headers = {
-			Accept: "application/json",
-			"Content-Length": "0"
-		};
-		if (source.apiKey) {
-			headers["x-api-key"] = source.apiKey;
-		}
-		const reqTimeout = Math.max(source.timeout || DEFAULT_TIMEOUT_MS, DEFAULT_WARM_TIMEOUT_MS);
-
-		const req = transport.request(target, { method: "POST", headers, timeout: reqTimeout }, (res) => {
-			const chunks = [];
-			res.on("data", (chunk) => chunks.push(chunk));
-			res.on("end", () => {
-				if (res.statusCode >= 200 && res.statusCode < 300) {
-					finalize(true, null);
-				} else {
-					const rawText = Buffer.concat(chunks).toString("utf8").slice(0, 200);
-					finalize(false, `HTTP ${res.statusCode}${rawText ? `: ${rawText}` : ""}`);
+		const entry = {
+			assetId: asset.id,
+			status: "pending",
+			error: null,
+			promise,
+			abort(reason = "aborted") {
+				if (entry.status !== "pending") {
+					return;
 				}
-			});
-			res.on("error", (err) => finalize(false, err.message));
-		});
+				abortController.abort();
+				finalize(false, reason);
+			}
+		};
 
-		entry.req = req;
-		req.on("timeout", () => {
-			req.destroy(new Error(`Timeout after ${reqTimeout}ms warming ${asset.id}`));
-		});
-		req.on("error", (err) => {
-			finalize(false, err.message);
-		});
-		req.end();
+		requestJson(source.url, warmPath, {
+			method: "POST",
+			apiKey: source.apiKey,
+			body: null,
+			timeout: reqTimeout,
+			signal: abortController.signal
+		}).then(
+			() => finalize(true, null),
+			(err) => finalize(false, err ? err.message : "warm failed")
+		);
 
 		return entry;
 	}
 
 	function prefetchNextSlide(session) {
-		if (session.suspended || !session.config.prefetchNext || session.assets.length < 2) {
+		if (session.suspended || !session.config.prefetchNext || session.index + 1 >= session.assets.length) {
 			return;
 		}
-		const nextIdx = (session.index + 1) % session.assets.length;
-		const nextAsset = session.assets[nextIdx];
+		const nextAsset = session.assets[session.index + 1];
 		if (!nextAsset || !nextAsset.id) {
 			return;
 		}
@@ -780,28 +762,27 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 		const gen = session.generation;
 
 		const expired = session.loadedAtMs > 0 && (nowFn().getTime() - session.loadedAtMs) >= POOL_MAX_AGE_MS;
-		if (!session.assets.length || expired || session.assets.length < 2) {
+		if (!session.assets.length || expired || session.index + 1 >= session.assets.length) {
 			await loadAndShow(session);
 			return;
 		}
 
 		if (!session.config.prefetchNext) {
-			session.index = (session.index + 1) % session.assets.length;
+			session.index += 1;
 			dispatchCurrent(session);
 			return;
 		}
 
-		const poolLen = session.assets.length;
-		const holdMs = session.config.coldCacheHoldMs;
+		let remainingHoldMs = session.config.coldCacheHoldMs;
+		const firstCandidateIdx = session.index + 1;
 
-		for (let offset = 1; offset <= poolLen; offset++) {
+		for (let candidateIdx = firstCandidateIdx; candidateIdx < session.assets.length; candidateIdx++) {
 			if (session.suspended || session.generation !== gen || !session.assets.length) {
 				return;
 			}
-			const candidateIdx = (session.index + offset) % session.assets.length;
 			const candidate = session.assets[candidateIdx];
 
-			if (offset >= 2 && holdMs <= 0) {
+			if (candidateIdx > firstCandidateIdx && remainingHoldMs <= 0) {
 				session.index = candidateIdx;
 				dispatchCurrent(session);
 				return;
@@ -815,10 +796,14 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 				session.activeWarm = warmEntry;
 			}
 
-			const result = await awaitCandidateWarm(session, warmEntry, holdMs);
+			const startedAt = Date.now();
+			const result = await awaitCandidateWarm(session, warmEntry, remainingHoldMs);
 			if (session.suspended || session.generation !== gen) {
 				return;
 			}
+			remainingHoldMs = result.timedOut
+				? 0
+				: Math.max(0, remainingHoldMs - Math.max(0, Date.now() - startedAt));
 
 			if (result.ok) {
 				if (session.activeWarm === warmEntry) {

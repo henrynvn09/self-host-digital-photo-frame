@@ -10,6 +10,14 @@ const { registerMediaRoutes } = require("./media_pipe");
 const { createSlideshowController } = require("./slideshow_controller");
 const MediaBackgroundModule = require("./MMM-MediaBackground");
 
+function waitUntil(pred, maxTicks = 80) {
+	return (async () => {
+		for (let i = 0; i < maxTicks && !pred(); i++) {
+			await new Promise((r) => setImmediate(r));
+		}
+	})();
+}
+
 function startTestHttpServer(handler) {
 	return new Promise((resolve, reject) => {
 		const server = http.createServer(handler);
@@ -977,10 +985,11 @@ test("MMM-MediaBackground renders VIDEO slides via <img> MJPEG stream over stati
 	}
 });
 
-test("createSlideshowController triggers N+1 /warm prefetch immediately upon displaying Slide N, wraps (N+1) % pool.length, and skips prefetch when prefetchNext:false", async (t) => {
+test("createSlideshowController triggers N+1 /warm prefetch immediately upon displaying Slide N, refreshes pool at end of batch, and skips prefetch when prefetchNext:false", async (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 
 	const warmRequests = [];
+	let poolFetchCount = 0;
 	const upstream = await startTestHttpServer((req, res) => {
 		let raw = "";
 		req.on("data", (c) => { raw += c; });
@@ -995,10 +1004,11 @@ test("createSlideshowController triggers N+1 /warm prefetch immediately upon dis
 				res.end(JSON.stringify({ status: "ok" }));
 				return;
 			}
+			poolFetchCount += 1;
 			res.end(JSON.stringify([
-				{ id: "slide-0", type: "IMAGE", durationSeconds: 0, exifInfo: {} },
-				{ id: "slide-1", type: "VIDEO", durationSeconds: 30, exifInfo: {} },
-				{ id: "slide-2", type: "IMAGE", durationSeconds: 0, exifInfo: {} }
+				{ id: `batch${poolFetchCount}-slide-0`, type: "IMAGE", durationSeconds: 0, exifInfo: {} },
+				{ id: `batch${poolFetchCount}-slide-1`, type: "VIDEO", durationSeconds: 30, exifInfo: {} },
+				{ id: `batch${poolFetchCount}-slide-2`, type: "IMAGE", durationSeconds: 0, exifInfo: {} }
 			]));
 		});
 	});
@@ -1009,12 +1019,6 @@ test("createSlideshowController triggers N+1 /warm prefetch immediately upon dis
 		nowFn: () => new Date(Date.UTC(2026, 6, 15, 12, 0, 0)),
 		randomFn: () => 0.99
 	});
-
-	const waitUntil = async (pred) => {
-		for (let i = 0; i < 60 && !pred(); i++) {
-			await new Promise((r) => setImmediate(r));
-		}
-	};
 
 	try {
 		await controller.configure("mod_prefetch", Object.assign({}, MediaBackgroundModule.defaults, {
@@ -1030,32 +1034,34 @@ test("createSlideshowController triggers N+1 /warm prefetch immediately upon dis
 		}));
 
 		assert.equal(emitted.length, 1);
-		assert.equal(emitted[0].payload.assetId, "slide-0");
+		assert.equal(emitted[0].payload.assetId, "batch1-slide-0");
 
-		// Immediately upon displaying Slide 0, POST /api/assets/slide-1/warm fires in background
+		// Immediately upon displaying Slide 0, POST /api/assets/batch1-slide-1/warm fires in background
 		await waitUntil(() => warmRequests.length >= 1);
 		assert.equal(warmRequests.length, 1);
 		assert.equal(warmRequests[0].method, "POST");
-		assert.equal(warmRequests[0].url, "/api/assets/slide-1/warm?window=14&fps=24");
+		assert.equal(warmRequests[0].url, "/api/assets/batch1-slide-1/warm?window=14&fps=24");
 		assert.equal(warmRequests[0].apiKey, "warm-secret");
 
 		// Advance to Slide 1 (VIDEO, 14s window) -> immediately warms Slide 2
 		t.mock.timers.tick(10000);
 		await waitUntil(() => emitted.length >= 2 && warmRequests.length >= 2);
-		assert.equal(emitted[1].payload.assetId, "slide-1");
-		assert.equal(warmRequests[1].url, "/api/assets/slide-2/warm?window=14&fps=24");
+		assert.equal(emitted[1].payload.assetId, "batch1-slide-1");
+		assert.equal(warmRequests[1].url, "/api/assets/batch1-slide-2/warm?window=14&fps=24");
 
-		// Advance to Slide 2 (last item in pool) -> immediately wraps (2 + 1) % 3 = 0 and warms slide-0
+		// Advance to Slide 2 (last item in pool) -> does NOT wastefully wrap-warm batch1-slide-0
 		t.mock.timers.tick(14000);
-		await waitUntil(() => emitted.length >= 3 && warmRequests.length >= 3);
-		assert.equal(emitted[2].payload.assetId, "slide-2");
-		assert.equal(warmRequests[2].url, "/api/assets/slide-0/warm?window=14&fps=24");
+		await waitUntil(() => emitted.length >= 3);
+		await waitUntil(() => false, 15);
+		assert.equal(emitted[2].payload.assetId, "batch1-slide-2");
+		assert.equal(warmRequests.length, 2, "last slide in pool should wait for pool refresh rather than wrap-warming old batch");
 
-		// Advance across wrap -> transitions directly to already-warmed slide-0 (which prefetches slide-1)
+		// Advance past end of pool -> refreshes pool to batch 2, displays batch2-slide-0, and prefetches batch2-slide-1
 		t.mock.timers.tick(10000);
-		await waitUntil(() => emitted.length >= 4 && warmRequests.length >= 4);
-		assert.equal(emitted[3].payload.assetId, "slide-0");
-		assert.equal(warmRequests[3].url, "/api/assets/slide-1/warm?window=14&fps=24");
+		await waitUntil(() => emitted.length >= 4 && warmRequests.length >= 3);
+		assert.equal(poolFetchCount, 2);
+		assert.equal(emitted[3].payload.assetId, "batch2-slide-0");
+		assert.equal(warmRequests[2].url, "/api/assets/batch2-slide-1/warm?window=14&fps=24");
 
 		// Reconfigure with prefetchNext: false -> zero /warm requests
 		warmRequests.length = 0;
@@ -1070,11 +1076,11 @@ test("createSlideshowController triggers N+1 /warm prefetch immediately upon dis
 				sortBy: "none"
 			}]
 		}));
-		await waitUntil(() => false);
+		await waitUntil(() => false, 15);
 		assert.equal(warmRequests.length, 0, "prefetchNext:false must not send /warm requests");
 		t.mock.timers.tick(10000);
 		await waitUntil(() => emitted.length >= 2);
-		assert.equal(emitted[1].payload.assetId, "slide-1");
+		assert.equal(emitted[1].payload.assetId, "batch3-slide-1");
 		assert.equal(warmRequests.length, 0);
 	} finally {
 		controller.stopAll();
@@ -1119,12 +1125,6 @@ test("createSlideshowController holds Slide N on screen up to coldCacheHoldMs wh
 		nowFn: () => new Date(Date.UTC(2026, 6, 15, 12, 0, 0)),
 		randomFn: () => 0.99
 	});
-
-	const waitUntil = async (pred) => {
-		for (let i = 0; i < 60 && !pred(); i++) {
-			await new Promise((r) => setImmediate(r));
-		}
-	};
 
 	try {
 		// Uses default coldCacheHoldMs (8000ms) from MediaBackgroundModule.defaults
@@ -1182,7 +1182,7 @@ test("createSlideshowController skips corrupt or timed-out Slide N+1 straight to
 					res.end(JSON.stringify({ message: "corrupt video" }));
 					return;
 				}
-				if ((mode === "timeout_n1" || mode === "zero_hold") && req.url.includes("/hung-1/warm")) {
+				if ((mode === "timeout_n1" || mode === "zero_hold") && (req.url.includes("/hung-1/warm") || req.url.includes("/hung-2/warm"))) {
 					pendingHungResponses.push(res);
 					return;
 				}
@@ -1205,7 +1205,7 @@ test("createSlideshowController skips corrupt or timed-out Slide N+1 straight to
 				res.end(JSON.stringify([
 					{ id: "ok-0", type: "IMAGE", exifInfo: {} },
 					{ id: "hung-1", type: "VIDEO", durationSeconds: 10, exifInfo: {} },
-					{ id: "ok-2", type: "IMAGE", exifInfo: {} }
+					{ id: "hung-2", type: "IMAGE", exifInfo: {} }
 				]));
 			} else {
 				res.end(JSON.stringify([
@@ -1229,12 +1229,6 @@ test("createSlideshowController skips corrupt or timed-out Slide N+1 straight to
 		randomFn: () => 0.99
 	});
 
-	const waitUntil = async (pred) => {
-		for (let i = 0; i < 80 && !pred(); i++) {
-			await new Promise((r) => setImmediate(r));
-		}
-	};
-
 	try {
 		// 1. Corrupt N+1 (422) -> keeps ok-0 on screen for full 12s, logs warning, and advances straight to ok-2 (N+2)
 		await controller.configure("mod_skip", Object.assign({}, MediaBackgroundModule.defaults, {
@@ -1252,7 +1246,7 @@ test("createSlideshowController skips corrupt or timed-out Slide N+1 straight to
 		assert.equal(emitted[1].payload.assetId, "ok-2", "must skip failed bad-1 straight to ok-2 (N+2)");
 		assert.equal(warnings.some((w) => w.includes("bad-1")), true, "expected warning logged for skipped bad-1");
 
-		// 2. Timed-out N+1 exceeding coldCacheHoldMs (8000ms default) -> holds 8s, logs warning, skips hung-1 to ok-2
+		// 2. Timed-out N+1 exceeding coldCacheHoldMs (8000ms default) -> caps total hold on ok-0 to 8000ms (even if N+2 also hangs!) and advances straight to hung-2
 		mode = "timeout_n1";
 		emitted.length = 0;
 		warnings.length = 0;
@@ -1265,16 +1259,16 @@ test("createSlideshowController skips corrupt or timed-out Slide N+1 straight to
 		assert.equal(emitted[0].payload.assetId, "ok-0");
 
 		t.mock.timers.tick(12000);
-		await waitUntil(() => false);
+		await waitUntil(() => false, 15);
 		assert.equal(emitted.length, 1, "must hold ok-0 when hung-1 is still warming at 12s");
 
 		t.mock.timers.tick(7999);
-		await waitUntil(() => false);
+		await waitUntil(() => false, 15);
 		assert.equal(emitted.length, 1, "must hold ok-0 until full 8000ms coldCacheHoldMs expires");
 
 		t.mock.timers.tick(1);
 		await waitUntil(() => emitted.length >= 2);
-		assert.equal(emitted[1].payload.assetId, "ok-2", "must skip timed-out hung-1 straight to ok-2");
+		assert.equal(emitted[1].payload.assetId, "hung-2", "must advance straight to N+2 after single coldCacheHoldMs budget expires without a second hold");
 		assert.equal(warnings.some((w) => w.includes("hung-1")), true, "expected warning logged for timed-out hung-1");
 
 		// 3. Explicit coldCacheHoldMs: 0 -> allowed (not coerced to 8000ms!), skips hung-1 immediately at 12s with 0ms hold
@@ -1292,10 +1286,10 @@ test("createSlideshowController skips corrupt or timed-out Slide N+1 straight to
 
 		t.mock.timers.tick(12000);
 		await waitUntil(() => emitted.length >= 2);
-		assert.equal(emitted[1].payload.assetId, "ok-2", "coldCacheHoldMs:0 must skip in-flight hung-1 at timer expiry without extra hold");
+		assert.equal(emitted[1].payload.assetId, "hung-2", "coldCacheHoldMs:0 must skip in-flight hung-1 at timer expiry without extra hold");
 		assert.equal(warnings.some((w) => w.includes("hung-1")), true);
 
-		// 4. All-corrupt pool -> bounded by pool.length (3), never infinite-loops
+		// 4. All-corrupt pool -> checks only remaining slides (bad-b, bad-c), never re-checks bad-a or infinite-loops
 		mode = "all_corrupt";
 		emitted.length = 0;
 		warnings.length = 0;
@@ -1308,9 +1302,11 @@ test("createSlideshowController skips corrupt or timed-out Slide N+1 straight to
 		assert.equal(emitted.length, 1);
 
 		t.mock.timers.tick(12000);
-		await waitUntil(() => warnings.length >= 3);
+		await waitUntil(() => warnings.length >= 2);
+		await waitUntil(() => false, 15);
 		assert.equal(emitted.length, 1, "must not dispatch known-corrupt candidates when entire pool fails warm");
-		assert.equal(warmAttempts.length <= 4, true, `expected bounded warm attempts (<= pool.length + initial prefetch), got ${warmAttempts.length}`);
+		assert.equal(warnings.length, 2, "must check only remaining slides bad-b and bad-c without re-checking current bad-a");
+		assert.equal(warmAttempts.some((u) => u.includes("/bad-a/warm")), false, "must never re-warm current Slide N");
 	} finally {
 		for (const res of pendingHungResponses) {
 			if (!res.writableEnded) res.end("{}");

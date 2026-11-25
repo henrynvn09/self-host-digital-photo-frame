@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -388,12 +389,20 @@ func parseVideoQueryParams(r *http.Request) (windowSec float64, requestedFPS int
 	return windowSec, requestedFPS
 }
 
-func writeMediaError(w http.ResponseWriter, err error) {
+func writeMediaErrorIfActive(w http.ResponseWriter, r *http.Request, assetID, relPath string, err error) bool {
+	if err == nil {
+		return false
+	}
+	if r.Context().Err() != nil {
+		return true
+	}
 	if errors.Is(err, preview.ErrMediaUnreadable) {
+		log.Printf("photo-api: unreadable asset %s (%s): %v", assetID, relPath, err)
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": err.Error()})
-		return
+		return true
 	}
 	writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+	return true
 }
 
 func (s *Server) handleAssetWarm(w http.ResponseWriter, r *http.Request) {
@@ -403,52 +412,31 @@ func (s *Server) handleAssetWarm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sourcePath := filepath.Join(s.libraryDir, filepath.FromSlash(asset.RelPath))
+	resp := map[string]any{
+		"status": "ok",
+		"id":     asset.ID,
+	}
+
 	if strings.EqualFold(asset.MediaType, "VIDEO") {
 		windowSec, requestedFPS := parseVideoQueryParams(r)
 		videoPreview, err := s.cache.GetOrGenerateVideoPreview(r.Context(), asset.ID, asset.Mtime, sourcePath, windowSec, requestedFPS)
-		if err != nil {
-			if r.Context().Err() != nil {
-				return
-			}
-			writeMediaError(w, err)
+		if writeMediaErrorIfActive(w, r, asset.ID, asset.RelPath, err) {
 			return
 		}
-		if _, err := s.cache.GetOrGenerateBackdrop(r.Context(), asset.ID, sourcePath, asset.Orientation); err != nil {
-			if r.Context().Err() != nil {
-				return
-			}
-			writeMediaError(w, err)
+		resp["type"] = "VIDEO"
+		resp["windowSeconds"] = videoPreview.WindowSec
+		resp["fps"] = videoPreview.FPS
+	} else {
+		if _, err := s.cache.GetOrGenerate(r.Context(), asset.ID, sourcePath, asset.Orientation); writeMediaErrorIfActive(w, r, asset.ID, asset.RelPath, err) {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":        "ok",
-			"id":            asset.ID,
-			"type":          "VIDEO",
-			"windowSeconds": videoPreview.WindowSec,
-			"fps":           videoPreview.FPS,
-		})
-		return
+		resp["type"] = "IMAGE"
 	}
 
-	if _, err := s.cache.GetOrGenerate(r.Context(), asset.ID, sourcePath, asset.Orientation); err != nil {
-		if r.Context().Err() != nil {
-			return
-		}
-		writeMediaError(w, err)
+	if _, err := s.cache.GetOrGenerateBackdrop(r.Context(), asset.ID, sourcePath, asset.Orientation); writeMediaErrorIfActive(w, r, asset.ID, asset.RelPath, err) {
 		return
 	}
-	if _, err := s.cache.GetOrGenerateBackdrop(r.Context(), asset.ID, sourcePath, asset.Orientation); err != nil {
-		if r.Context().Err() != nil {
-			return
-		}
-		writeMediaError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status": "ok",
-		"id":     asset.ID,
-		"type":   "IMAGE",
-	})
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleAssetStream(w http.ResponseWriter, r *http.Request) {
@@ -465,11 +453,7 @@ func (s *Server) handleAssetStream(w http.ResponseWriter, r *http.Request) {
 
 	sourcePath := filepath.Join(s.libraryDir, filepath.FromSlash(asset.RelPath))
 	videoPreview, err := s.cache.GetOrGenerateVideoPreview(r.Context(), asset.ID, asset.Mtime, sourcePath, windowSec, requestedFPS)
-	if err != nil {
-		if r.Context().Err() != nil {
-			return
-		}
-		writeMediaError(w, err)
+	if writeMediaErrorIfActive(w, r, asset.ID, asset.RelPath, err) {
 		return
 	}
 
@@ -509,11 +493,7 @@ func (s *Server) serveAssetRendition(
 
 	sourcePath := filepath.Join(s.libraryDir, filepath.FromSlash(asset.RelPath))
 	res, err := generate(r.Context(), asset.ID, sourcePath, asset.Orientation)
-	if err != nil {
-		if r.Context().Err() != nil {
-			return
-		}
-		writeMediaError(w, err)
+	if writeMediaErrorIfActive(w, r, asset.ID, asset.RelPath, err) {
 		return
 	}
 

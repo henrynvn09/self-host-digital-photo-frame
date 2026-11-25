@@ -140,7 +140,12 @@ func (c *Cache) GetOrGenerateVideoPreview(
 	cacheKey := key.cacheKey()
 	targetPath := key.diskPath(c.cacheDir)
 
-	res, err := c.getOrCreate(ctx, assetID, sourcePath, cacheKey, targetPath, func(genCtx context.Context) ([]byte, error) {
+	res, err := c.getOrCreate(ctx, cacheTarget{
+		assetID:    assetID,
+		sourcePath: sourcePath,
+		cacheKey:   cacheKey,
+		targetPath: targetPath,
+	}, func(genCtx context.Context) ([]byte, error) {
 		return c.generateVideoPreviewBytes(genCtx, key, sourcePath)
 	})
 	if err != nil {
