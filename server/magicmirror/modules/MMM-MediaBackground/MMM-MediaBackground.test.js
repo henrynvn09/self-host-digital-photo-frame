@@ -10,6 +10,14 @@ const { registerMediaRoutes } = require("./media_pipe");
 const { createSlideshowController } = require("./slideshow_controller");
 const MediaBackgroundModule = require("./MMM-MediaBackground");
 
+function waitUntil(pred, maxTicks = 80) {
+	return (async () => {
+		for (let i = 0; i < maxTicks && !pred(); i++) {
+			await new Promise((r) => setImmediate(r));
+		}
+	})();
+}
+
 function startTestHttpServer(handler) {
 	return new Promise((resolve, reject) => {
 		const server = http.createServer(handler);
@@ -975,4 +983,450 @@ test("MMM-MediaBackground renders VIDEO slides via <img> MJPEG stream over stati
 			global.moment = prevMoment;
 		}
 	}
+});
+
+test("createSlideshowController triggers N+1 /warm prefetch immediately upon displaying Slide N, refreshes pool at end of batch, and skips prefetch when prefetchNext:false", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+
+	const warmRequests = [];
+	let poolFetchCount = 0;
+	const upstream = await startTestHttpServer((req, res) => {
+		let raw = "";
+		req.on("data", (c) => { raw += c; });
+		req.on("end", () => {
+			res.setHeader("Content-Type", "application/json");
+			if (req.url.startsWith("/api/assets/") && req.url.includes("/warm")) {
+				warmRequests.push({
+					method: req.method,
+					url: req.url,
+					apiKey: req.headers["x-api-key"]
+				});
+				res.end(JSON.stringify({ status: "ok" }));
+				return;
+			}
+			poolFetchCount += 1;
+			res.end(JSON.stringify([
+				{ id: `batch${poolFetchCount}-slide-0`, type: "IMAGE", durationSeconds: 0, exifInfo: {} },
+				{ id: `batch${poolFetchCount}-slide-1`, type: "VIDEO", durationSeconds: 30, exifInfo: {} },
+				{ id: `batch${poolFetchCount}-slide-2`, type: "IMAGE", durationSeconds: 0, exifInfo: {} }
+			]));
+		});
+	});
+
+	const emitted = [];
+	const controller = createSlideshowController({
+		sendNotification: (name, payload) => emitted.push({ name, payload }),
+		nowFn: () => new Date(Date.UTC(2026, 6, 15, 12, 0, 0)),
+		randomFn: () => 0.99
+	});
+
+	try {
+		await controller.configure("mod_prefetch", Object.assign({}, MediaBackgroundModule.defaults, {
+			slideshowSpeed: 10000,
+			maxVideoDurationSeconds: 14,
+			videoFps: 24,
+			sources: [{
+				url: upstream.baseUrl,
+				apiKey: "warm-secret",
+				mode: "random",
+				sortBy: "none"
+			}]
+		}));
+
+		assert.equal(emitted.length, 1);
+		assert.equal(emitted[0].payload.assetId, "batch1-slide-0");
+
+		// Immediately upon displaying Slide 0, POST /api/assets/batch1-slide-1/warm fires in background
+		await waitUntil(() => warmRequests.length >= 1);
+		assert.equal(warmRequests.length, 1);
+		assert.equal(warmRequests[0].method, "POST");
+		assert.equal(warmRequests[0].url, "/api/assets/batch1-slide-1/warm?window=14&fps=24");
+		assert.equal(warmRequests[0].apiKey, "warm-secret");
+
+		// Advance to Slide 1 (VIDEO, 14s window) -> immediately warms Slide 2
+		t.mock.timers.tick(10000);
+		await waitUntil(() => emitted.length >= 2 && warmRequests.length >= 2);
+		assert.equal(emitted[1].payload.assetId, "batch1-slide-1");
+		assert.equal(warmRequests[1].url, "/api/assets/batch1-slide-2/warm?window=14&fps=24");
+
+		// Advance to Slide 2 (last item in pool) -> does NOT wastefully wrap-warm batch1-slide-0
+		t.mock.timers.tick(14000);
+		await waitUntil(() => emitted.length >= 3);
+		await waitUntil(() => false, 15);
+		assert.equal(emitted[2].payload.assetId, "batch1-slide-2");
+		assert.equal(warmRequests.length, 2, "last slide in pool should wait for pool refresh rather than wrap-warming old batch");
+
+		// Advance past end of pool -> refreshes pool to batch 2, displays batch2-slide-0, and prefetches batch2-slide-1
+		t.mock.timers.tick(10000);
+		await waitUntil(() => emitted.length >= 4 && warmRequests.length >= 3);
+		assert.equal(poolFetchCount, 2);
+		assert.equal(emitted[3].payload.assetId, "batch2-slide-0");
+		assert.equal(warmRequests[2].url, "/api/assets/batch2-slide-1/warm?window=14&fps=24");
+
+		// Reconfigure with prefetchNext: false -> zero /warm requests
+		warmRequests.length = 0;
+		emitted.length = 0;
+		await controller.configure("mod_prefetch", Object.assign({}, MediaBackgroundModule.defaults, {
+			slideshowSpeed: 10000,
+			prefetchNext: false,
+			sources: [{
+				url: upstream.baseUrl,
+				apiKey: "warm-secret",
+				mode: "random",
+				sortBy: "none"
+			}]
+		}));
+		await waitUntil(() => false, 15);
+		assert.equal(warmRequests.length, 0, "prefetchNext:false must not send /warm requests");
+		t.mock.timers.tick(10000);
+		await waitUntil(() => emitted.length >= 2);
+		assert.equal(emitted[1].payload.assetId, "batch3-slide-1");
+		assert.equal(warmRequests.length, 0);
+	} finally {
+		controller.stopAll();
+		await upstream.close();
+	}
+});
+
+test("createSlideshowController holds Slide N on screen up to coldCacheHoldMs while Slide N+1 warms and dispatches N+1 the instant /warm completes", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+
+	let releaseSlideBWarm = null;
+	const warmSeen = [];
+	const upstream = await startTestHttpServer((req, res) => {
+		req.resume();
+		req.on("end", () => {
+			res.setHeader("Content-Type", "application/json");
+			if (req.url.startsWith("/api/assets/slide-b/warm")) {
+				warmSeen.push("slide-b");
+				releaseSlideBWarm = () => {
+					if (!res.writableEnded) {
+						res.end(JSON.stringify({ status: "ok" }));
+					}
+				};
+				return;
+			}
+			if (req.url.startsWith("/api/assets/") && req.url.includes("/warm")) {
+				warmSeen.push(req.url);
+				res.end(JSON.stringify({ status: "ok" }));
+				return;
+			}
+			res.end(JSON.stringify([
+				{ id: "slide-a", type: "IMAGE", durationSeconds: 0, exifInfo: {} },
+				{ id: "slide-b", type: "VIDEO", durationSeconds: 25, exifInfo: {} },
+				{ id: "slide-c", type: "IMAGE", durationSeconds: 0, exifInfo: {} }
+			]));
+		});
+	});
+
+	const emitted = [];
+	const controller = createSlideshowController({
+		sendNotification: (name, payload) => emitted.push({ name, payload }),
+		nowFn: () => new Date(Date.UTC(2026, 6, 15, 12, 0, 0)),
+		randomFn: () => 0.99
+	});
+
+	try {
+		// Uses default coldCacheHoldMs (8000ms) from MediaBackgroundModule.defaults
+		await controller.configure("mod_hold", Object.assign({}, MediaBackgroundModule.defaults, {
+			slideshowSpeed: 12000,
+			sources: [{
+				url: upstream.baseUrl,
+				apiKey: "hold-key",
+				mode: "random",
+				sortBy: "none"
+			}]
+		}));
+
+		assert.equal(emitted.length, 1);
+		assert.equal(emitted[0].payload.assetId, "slide-a");
+		await waitUntil(() => releaseSlideBWarm !== null);
+
+		// Slide A's 12s timer expires while slide-b /warm is still in flight -> holds Slide A on screen!
+		t.mock.timers.tick(12000);
+		await waitUntil(() => false);
+		assert.equal(emitted.length, 1, "must hold Slide A on screen while Slide B is still warming");
+
+		// 3500ms into the 8000ms grace window -> still holding Slide A cleanly
+		t.mock.timers.tick(3500);
+		await waitUntil(() => false);
+		assert.equal(emitted.length, 1, "must keep holding Slide A within coldCacheHoldMs grace window");
+
+		// Slide B finishes warming at +3500ms -> dispatches Slide B IMMEDIATELY without waiting remaining 4500ms!
+		releaseSlideBWarm();
+		await waitUntil(() => emitted.length >= 2);
+		assert.equal(emitted.length, 2);
+		assert.equal(emitted[1].payload.assetId, "slide-b");
+	} finally {
+		if (releaseSlideBWarm) releaseSlideBWarm();
+		controller.stopAll();
+		await upstream.close();
+	}
+});
+
+test("createSlideshowController skips corrupt or timed-out Slide N+1 straight to N+2, honors explicit coldCacheHoldMs:0, and bounds all-corrupt pools by pool.length", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+
+	let mode = "error_n1";
+	let warmAttempts = [];
+	const pendingHungResponses = [];
+
+	const upstream = await startTestHttpServer((req, res) => {
+		req.resume();
+		req.on("end", () => {
+			res.setHeader("Content-Type", "application/json");
+			if (req.url.startsWith("/api/assets/") && req.url.includes("/warm")) {
+				warmAttempts.push(req.url);
+				if (mode === "error_n1" && req.url.includes("/bad-1/warm")) {
+					res.statusCode = 422;
+					res.end(JSON.stringify({ message: "corrupt video" }));
+					return;
+				}
+				if ((mode === "timeout_n1" || mode === "zero_hold") && (req.url.includes("/hung-1/warm") || req.url.includes("/hung-2/warm"))) {
+					pendingHungResponses.push(res);
+					return;
+				}
+				if (mode === "all_corrupt") {
+					res.statusCode = 422;
+					res.end(JSON.stringify({ message: "all corrupt" }));
+					return;
+				}
+				res.end(JSON.stringify({ status: "ok" }));
+				return;
+			}
+
+			if (mode === "error_n1") {
+				res.end(JSON.stringify([
+					{ id: "ok-0", type: "IMAGE", exifInfo: {} },
+					{ id: "bad-1", type: "VIDEO", durationSeconds: 10, exifInfo: {} },
+					{ id: "ok-2", type: "IMAGE", exifInfo: {} }
+				]));
+			} else if (mode === "timeout_n1" || mode === "zero_hold") {
+				res.end(JSON.stringify([
+					{ id: "ok-0", type: "IMAGE", exifInfo: {} },
+					{ id: "hung-1", type: "VIDEO", durationSeconds: 10, exifInfo: {} },
+					{ id: "hung-2", type: "IMAGE", exifInfo: {} }
+				]));
+			} else {
+				res.end(JSON.stringify([
+					{ id: "bad-a", type: "VIDEO", durationSeconds: 10, exifInfo: {} },
+					{ id: "bad-b", type: "VIDEO", durationSeconds: 10, exifInfo: {} },
+					{ id: "bad-c", type: "VIDEO", durationSeconds: 10, exifInfo: {} }
+				]));
+			}
+		});
+	});
+
+	const emitted = [];
+	const warnings = [];
+	const controller = createSlideshowController({
+		sendNotification: (name, payload) => emitted.push({ name, payload }),
+		logger: {
+			warn: (msg) => warnings.push(msg),
+			error: () => {}
+		},
+		nowFn: () => new Date(Date.UTC(2026, 6, 15, 12, 0, 0)),
+		randomFn: () => 0.99
+	});
+
+	try {
+		// 1. Corrupt N+1 (422) -> keeps ok-0 on screen for full 12s, logs warning, and advances straight to ok-2 (N+2)
+		await controller.configure("mod_skip", Object.assign({}, MediaBackgroundModule.defaults, {
+			slideshowSpeed: 12000,
+			sources: [{ url: upstream.baseUrl, apiKey: "k", mode: "random", sortBy: "none" }]
+		}));
+		await waitUntil(() => warmAttempts.length >= 1);
+		assert.equal(emitted.length, 1);
+		assert.equal(emitted[0].payload.assetId, "ok-0");
+
+		t.mock.timers.tick(11999);
+		assert.equal(emitted.length, 1, "Slide ok-0 must stay on screen for its full 12s display interval");
+		t.mock.timers.tick(1);
+		await waitUntil(() => emitted.length >= 2);
+		assert.equal(emitted[1].payload.assetId, "ok-2", "must skip failed bad-1 straight to ok-2 (N+2)");
+		assert.equal(warnings.some((w) => w.includes("bad-1")), true, "expected warning logged for skipped bad-1");
+
+		// 2. Timed-out N+1 exceeding coldCacheHoldMs (8000ms default) -> caps total hold on ok-0 to 8000ms (even if N+2 also hangs!) and advances straight to hung-2
+		mode = "timeout_n1";
+		emitted.length = 0;
+		warnings.length = 0;
+		warmAttempts = [];
+		await controller.configure("mod_skip", Object.assign({}, MediaBackgroundModule.defaults, {
+			slideshowSpeed: 12000,
+			sources: [{ url: upstream.baseUrl, apiKey: "k", mode: "random", sortBy: "none" }]
+		}));
+		await waitUntil(() => warmAttempts.length >= 1);
+		assert.equal(emitted[0].payload.assetId, "ok-0");
+
+		t.mock.timers.tick(12000);
+		await waitUntil(() => false, 15);
+		assert.equal(emitted.length, 1, "must hold ok-0 when hung-1 is still warming at 12s");
+
+		t.mock.timers.tick(7999);
+		await waitUntil(() => false, 15);
+		assert.equal(emitted.length, 1, "must hold ok-0 until full 8000ms coldCacheHoldMs expires");
+
+		t.mock.timers.tick(1);
+		await waitUntil(() => emitted.length >= 2);
+		assert.equal(emitted[1].payload.assetId, "hung-2", "must advance straight to N+2 after single coldCacheHoldMs budget expires without a second hold");
+		assert.equal(warnings.some((w) => w.includes("hung-1")), true, "expected warning logged for timed-out hung-1");
+
+		// 3. Explicit coldCacheHoldMs: 0 -> allowed (not coerced to 8000ms!), skips hung-1 immediately at 12s with 0ms hold
+		mode = "zero_hold";
+		emitted.length = 0;
+		warnings.length = 0;
+		warmAttempts = [];
+		await controller.configure("mod_skip", Object.assign({}, MediaBackgroundModule.defaults, {
+			slideshowSpeed: 12000,
+			coldCacheHoldMs: 0,
+			sources: [{ url: upstream.baseUrl, apiKey: "k", mode: "random", sortBy: "none" }]
+		}));
+		await waitUntil(() => warmAttempts.length >= 1);
+		assert.equal(emitted[0].payload.assetId, "ok-0");
+
+		t.mock.timers.tick(12000);
+		await waitUntil(() => emitted.length >= 2);
+		assert.equal(emitted[1].payload.assetId, "hung-2", "coldCacheHoldMs:0 must skip in-flight hung-1 at timer expiry without extra hold");
+		assert.equal(warnings.some((w) => w.includes("hung-1")), true);
+
+		// 4. All-corrupt pool -> checks only remaining slides (bad-b, bad-c), never re-checks bad-a or infinite-loops
+		mode = "all_corrupt";
+		emitted.length = 0;
+		warnings.length = 0;
+		warmAttempts = [];
+		await controller.configure("mod_skip", Object.assign({}, MediaBackgroundModule.defaults, {
+			slideshowSpeed: 12000,
+			sources: [{ url: upstream.baseUrl, apiKey: "k", mode: "random", sortBy: "none" }]
+		}));
+		await waitUntil(() => warmAttempts.length >= 1);
+		assert.equal(emitted.length, 1);
+
+		t.mock.timers.tick(12000);
+		await waitUntil(() => warnings.length >= 2);
+		await waitUntil(() => false, 15);
+		assert.equal(emitted.length, 1, "must not dispatch known-corrupt candidates when entire pool fails warm");
+		assert.equal(warnings.length, 2, "must check only remaining slides bad-b and bad-c without re-checking current bad-a");
+		assert.equal(warmAttempts.some((u) => u.includes("/bad-a/warm")), false, "must never re-warm current Slide N");
+	} finally {
+		for (const res of pendingHungResponses) {
+			if (!res.writableEnded) res.end("{}");
+		}
+		controller.stopAll();
+		await upstream.close();
+	}
+});
+
+test("MMM-MediaBackground handles img.onerror gracefully for both pre-load failures and mid-flight MJPEG stream drops without duplicate error notifications", () => {
+	const fakeDoc = createFakeDomEnvironment();
+	const sentNotifications = [];
+
+	const instance = Object.create(MediaBackgroundModule);
+	instance.name = "MMM-MediaBackground";
+	instance.identifier = "module_err_1";
+	instance.documentRef = fakeDoc;
+	instance.config = Object.assign({}, MediaBackgroundModule.defaults, {
+		slideshowSpeed: 12000,
+		sources: [{ url: "http://photo-api:2283", apiKey: "**SECRET_0**" }]
+	});
+	instance.sendSocketNotification = (name, payload) => sentNotifications.push({ name, payload });
+
+	instance.start();
+	const root = instance.getDom();
+	const stage = root.children[0];
+	const infoDiv = root.children[1];
+	sentNotifications.length = 0;
+
+	// 1. Load healthy Slide 1
+	instance.socketNotificationReceived("MEDIABACKGROUND_DISPLAY", {
+		identifier: instance.identifier,
+		assetId: "photo-healthy",
+		type: "IMAGE",
+		previewUrl: "/mediabackground/preview/photo-healthy?source=0",
+		backdropUrl: "/mediabackground/backdrop/photo-healthy?source=0",
+		index: 1,
+		total: 5,
+		albumName: "Healthy Album",
+		exifInfo: { dateTimeOriginal: "2024-05-01T10:00:00Z" },
+		infoFields: ["date", "album"],
+		showMediaInfo: true,
+		showBlurredBackdrop: true,
+		transitionSpeed: "500ms"
+	});
+	const slot1 = stage.children[0];
+	const img1 = slot1.children[1];
+	img1.onload();
+	assert.equal(slot1.style.opacity, "1");
+	assert.equal(infoDiv.style.display, "");
+
+	// 2. Incoming Slide 2 errors before onload -> broken slot2 removed, healthy slot1 preserved, single MEDIABACKGROUND_LOAD_ERROR
+	instance.socketNotificationReceived("MEDIABACKGROUND_DISPLAY", {
+		identifier: instance.identifier,
+		assetId: "vid-broken-incoming",
+		type: "VIDEO",
+		durationSeconds: 10,
+		playbackWindowSeconds: 12,
+		videoFps: 30,
+		backdropUrl: "/mediabackground/backdrop/vid-broken-incoming?source=0",
+		index: 2,
+		total: 5,
+		showMediaInfo: true,
+		showBlurredBackdrop: true,
+		transitionSpeed: "500ms"
+	});
+	assert.equal(stage.children.length, 2);
+	const slot2 = stage.children[1];
+	const img2 = slot2.children[1];
+	const errHandler2 = img2.onerror;
+	errHandler2();
+	// Even if browser fires a duplicate error callback reference, it must not emit a second skip
+	errHandler2();
+
+	assert.equal(img2.src, "");
+	assert.equal(img2.onerror, null);
+	assert.equal(stage.children.length, 1, "healthy previous slide must remain visible when incoming slide fails");
+	assert.equal(stage.children[0], slot1);
+	assert.equal(infoDiv.style.display, "", "healthy slide overlay remains visible");
+	assert.equal(sentNotifications.length, 1);
+	assert.deepEqual(sentNotifications[0], {
+		name: "MEDIABACKGROUND_LOAD_ERROR",
+		payload: { identifier: instance.identifier, assetId: "vid-broken-incoming" }
+	});
+
+	// 3. Active VIDEO MJPEG stream loads frame 1 + completes crossfade, then errors mid-flight -> tears down broken <img>, hides stale overlay, notifies helper once
+	sentNotifications.length = 0;
+	instance.socketNotificationReceived("MEDIABACKGROUND_DISPLAY", {
+		identifier: instance.identifier,
+		assetId: "vid-midstream-drop",
+		type: "VIDEO",
+		durationSeconds: 20,
+		playbackWindowSeconds: 12,
+		videoFps: 30,
+		backdropUrl: "/mediabackground/backdrop/vid-midstream-drop?source=0",
+		index: 3,
+		total: 5,
+		exifInfo: { dateTimeOriginal: "2024-06-01T10:00:00Z" },
+		infoFields: ["date"],
+		showMediaInfo: true,
+		showBlurredBackdrop: true,
+		transitionSpeed: "500ms"
+	});
+	const slot3 = stage.children[1];
+	const img3 = slot3.children[1];
+	img3.onload();
+	slot3.dispatchEvent({ type: "transitionend" });
+	assert.equal(stage.children.length, 1);
+	assert.equal(stage.children[0], slot3);
+
+	const midStreamErrHandler = img3.onerror;
+	midStreamErrHandler();
+	midStreamErrHandler();
+
+	assert.equal(img3.src, "");
+	assert.equal(stage.children.length, 0, "broken mid-stream <img> slot must be torn down cleanly");
+	assert.equal(infoDiv.style.display, "none", "overlay hidden when no active slide remains on stage");
+	assert.equal(sentNotifications.length, 1);
+	assert.deepEqual(sentNotifications[0], {
+		name: "MEDIABACKGROUND_LOAD_ERROR",
+		payload: { identifier: instance.identifier, assetId: "vid-midstream-drop" }
+	});
 });

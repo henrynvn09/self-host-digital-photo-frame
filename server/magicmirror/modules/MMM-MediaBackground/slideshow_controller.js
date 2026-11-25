@@ -4,6 +4,9 @@ const http = require("node:http");
 const https = require("node:https");
 
 const DEFAULT_SLIDESHOW_SPEED_MS = 12000;
+const DEFAULT_COLD_CACHE_HOLD_MS = 8000;
+const MAX_COLD_CACHE_HOLD_MS = 120000;
+const DEFAULT_WARM_TIMEOUT_MS = 65000;
 const DEFAULT_VIDEO_FPS = 30;
 const MAX_VIDEO_FPS = 30;
 const MIN_VIDEO_WINDOW_MS = 500;
@@ -154,6 +157,13 @@ function normalizeConfig(rawConfig = {}, currentYear = new Date().getUTCFullYear
 	const videoWindowMs = resolveVideoWindowMs(rawConfig, slideshowSpeed);
 	const videoFps = normalizeVideoFps(rawConfig.videoFps);
 	const videoMuted = rawConfig.videoMuted != null ? Boolean(rawConfig.videoMuted) : true;
+	const prefetchNext = rawConfig.prefetchNext != null ? Boolean(rawConfig.prefetchNext) : true;
+	const coldCacheHoldMs = clampInt(
+		rawConfig.coldCacheHoldMs,
+		0,
+		MAX_COLD_CACHE_HOLD_MS,
+		DEFAULT_COLD_CACHE_HOLD_MS
+	);
 
 	const transitionSpeed = rawConfig.transitionImages === false
 		? "0s"
@@ -216,6 +226,8 @@ function normalizeConfig(rawConfig = {}, currentYear = new Date().getUTCFullYear
 		videoWindowMs,
 		videoFps,
 		videoMuted,
+		prefetchNext,
+		coldCacheHoldMs,
 		transitionSpeed,
 		backgroundSize,
 		backgroundPosition,
@@ -261,8 +273,12 @@ function mergeServerSecrets(clientConfig, serverConfig) {
 	return merged;
 }
 
-function requestJson(baseUrl, path, { method = "POST", apiKey = "", body = null, timeout = DEFAULT_TIMEOUT_MS } = {}) {
+function requestJson(baseUrl, path, { method = "POST", apiKey = "", body = null, timeout = DEFAULT_TIMEOUT_MS, signal = null } = {}) {
 	return new Promise((resolve, reject) => {
+		if (signal && signal.aborted) {
+			reject(new Error("aborted"));
+			return;
+		}
 		let target;
 		try {
 			target = new URL(path, baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
@@ -281,10 +297,27 @@ function requestJson(baseUrl, path, { method = "POST", apiKey = "", body = null,
 		if (payloadBuf) {
 			headers["Content-Type"] = "application/json";
 			headers["Content-Length"] = String(payloadBuf.length);
+		} else if (method === "POST") {
+			headers["Content-Length"] = "0";
 		}
 		if (apiKey) {
 			headers["x-api-key"] = apiKey;
 		}
+
+		let settled = false;
+		const onAbort = () => {
+			if (!req.destroyed) {
+				req.destroy(new Error("aborted"));
+			}
+		};
+		const finish = (fn, val) => {
+			if (settled) return;
+			settled = true;
+			if (signal) {
+				signal.removeEventListener("abort", onAbort);
+			}
+			fn(val);
+		};
 
 		const req = transport.request(target, { method, headers, timeout }, (res) => {
 			const chunks = [];
@@ -292,21 +325,25 @@ function requestJson(baseUrl, path, { method = "POST", apiKey = "", body = null,
 			res.on("end", () => {
 				const rawText = Buffer.concat(chunks).toString("utf8");
 				if (res.statusCode < 200 || res.statusCode >= 300) {
-					reject(new Error(`HTTP ${res.statusCode} from ${target.pathname}: ${rawText.slice(0, 200)}`));
+					finish(reject, new Error(`HTTP ${res.statusCode} from ${target.pathname}: ${rawText.slice(0, 200)}`));
 					return;
 				}
 				try {
-					resolve(rawText.trim() ? JSON.parse(rawText) : null);
+					finish(resolve, rawText.trim() ? JSON.parse(rawText) : null);
 				} catch (parseErr) {
-					reject(new Error(`Invalid JSON from ${target.pathname}: ${parseErr.message}`));
+					finish(reject, new Error(`Invalid JSON from ${target.pathname}: ${parseErr.message}`));
 				}
 			});
+			res.on("error", (err) => finish(reject, err));
 		});
 
+		if (signal) {
+			signal.addEventListener("abort", onAbort, { once: true });
+		}
 		req.on("timeout", () => {
 			req.destroy(new Error(`Timeout after ${timeout}ms requesting ${target.pathname}`));
 		});
-		req.on("error", reject);
+		req.on("error", (err) => finish(reject, err));
 		if (payloadBuf) {
 			req.write(payloadBuf);
 		}
@@ -503,6 +540,134 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 			clearTimeout(session.retryTimer);
 			session.retryTimer = null;
 		}
+		if (session.holdTimer) {
+			clearTimeout(session.holdTimer);
+			session.holdTimer = null;
+		}
+		if (session.activeWarm) {
+			session.activeWarm.abort("cancelled");
+			session.activeWarm = null;
+		}
+	}
+
+	function startWarmOperation(session, asset) {
+		const source = session.config.sources[session.activeSourceIndex];
+		if (!source || !source.url || !asset || !asset.id) {
+			return {
+				assetId: asset ? asset.id : "",
+				status: "warm",
+				error: null,
+				promise: Promise.resolve({ ok: true }),
+				abort() {}
+			};
+		}
+
+		const windowMs = source.videoWindowMs || session.config.videoWindowMs || DEFAULT_SLIDESHOW_SPEED_MS;
+		const windowSec = Number((windowMs / 1000).toFixed(3));
+		const fps = session.config.videoFps;
+		const warmPath = `api/assets/${encodeURIComponent(asset.id)}/warm?window=${encodeURIComponent(String(windowSec))}&fps=${encodeURIComponent(String(fps))}`;
+		const reqTimeout = Math.max(source.timeout || DEFAULT_TIMEOUT_MS, DEFAULT_WARM_TIMEOUT_MS);
+		const abortController = new AbortController();
+
+		let resolvePromise;
+		const promise = new Promise((resolve) => {
+			resolvePromise = resolve;
+		});
+
+		const finalize = (ok, errMsg = null) => {
+			if (entry.status !== "pending") {
+				return;
+			}
+			entry.status = ok ? "warm" : "failed";
+			entry.error = errMsg;
+			resolvePromise(ok ? { ok: true } : { ok: false, error: errMsg });
+		};
+
+		const entry = {
+			assetId: asset.id,
+			status: "pending",
+			error: null,
+			promise,
+			abort(reason = "aborted") {
+				if (entry.status !== "pending") {
+					return;
+				}
+				abortController.abort();
+				finalize(false, reason);
+			}
+		};
+
+		requestJson(source.url, warmPath, {
+			method: "POST",
+			apiKey: source.apiKey,
+			body: null,
+			timeout: reqTimeout,
+			signal: abortController.signal
+		}).then(
+			() => finalize(true, null),
+			(err) => finalize(false, err ? err.message : "warm failed")
+		);
+
+		return entry;
+	}
+
+	function prefetchNextSlide(session) {
+		if (session.suspended || !session.config.prefetchNext || session.index + 1 >= session.assets.length) {
+			return;
+		}
+		const nextAsset = session.assets[session.index + 1];
+		if (!nextAsset || !nextAsset.id) {
+			return;
+		}
+		if (
+			session.activeWarm &&
+			session.activeWarm.assetId === nextAsset.id &&
+			(session.activeWarm.status === "warm" || session.activeWarm.status === "pending")
+		) {
+			return;
+		}
+		if (session.activeWarm) {
+			session.activeWarm.abort("superseded");
+		}
+		session.activeWarm = startWarmOperation(session, nextAsset);
+	}
+
+	function awaitCandidateWarm(session, entry, holdMs) {
+		if (entry.status === "warm") {
+			return Promise.resolve({ ok: true });
+		}
+		if (entry.status === "failed") {
+			return Promise.resolve({ ok: false, error: entry.error });
+		}
+		if (holdMs <= 0) {
+			const msg = `exceeded coldCacheHoldMs (${holdMs}ms)`;
+			entry.abort(msg);
+			return Promise.resolve({ ok: false, error: msg, timedOut: true });
+		}
+
+		return new Promise((resolve) => {
+			let settled = false;
+			const finish = (result) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				if (session.holdTimer) {
+					clearTimeout(session.holdTimer);
+					session.holdTimer = null;
+				}
+				resolve(result);
+			};
+
+			session.holdTimer = setTimeout(() => {
+				session.holdTimer = null;
+				const msg = `exceeded coldCacheHoldMs (${holdMs}ms)`;
+				entry.abort(msg);
+				finish({ ok: false, error: msg, timedOut: true });
+			}, holdMs);
+
+			entry.promise.then((res) => finish(res));
+		});
 	}
 
 	function scheduleNextTick(session) {
@@ -559,6 +724,7 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 			return;
 		}
 		sendNotification("MEDIABACKGROUND_DISPLAY", buildDisplayPayload(session));
+		prefetchNextSlide(session);
 		scheduleNextTick(session);
 	}
 
@@ -567,8 +733,12 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 			return;
 		}
 		session.loading = true;
+		const gen = session.generation;
 		try {
 			const ok = await refreshPool(session);
+			if (session.suspended || session.generation !== gen) {
+				return;
+			}
 			if (ok) {
 				dispatchCurrent(session);
 			} else if (!session.suspended) {
@@ -589,6 +759,7 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 		if (!session || session.suspended) {
 			return;
 		}
+		const gen = session.generation;
 
 		const expired = session.loadedAtMs > 0 && (nowFn().getTime() - session.loadedAtMs) >= POOL_MAX_AGE_MS;
 		if (!session.assets.length || expired || session.index + 1 >= session.assets.length) {
@@ -596,8 +767,66 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 			return;
 		}
 
-		session.index += 1;
-		dispatchCurrent(session);
+		if (!session.config.prefetchNext) {
+			session.index += 1;
+			dispatchCurrent(session);
+			return;
+		}
+
+		let remainingHoldMs = session.config.coldCacheHoldMs;
+		const firstCandidateIdx = session.index + 1;
+
+		for (let candidateIdx = firstCandidateIdx; candidateIdx < session.assets.length; candidateIdx++) {
+			if (session.suspended || session.generation !== gen || !session.assets.length) {
+				return;
+			}
+			const candidate = session.assets[candidateIdx];
+
+			if (candidateIdx > firstCandidateIdx && remainingHoldMs <= 0) {
+				session.index = candidateIdx;
+				dispatchCurrent(session);
+				return;
+			}
+
+			let warmEntry = session.activeWarm && session.activeWarm.assetId === candidate.id
+				? session.activeWarm
+				: null;
+			if (!warmEntry) {
+				warmEntry = startWarmOperation(session, candidate);
+				session.activeWarm = warmEntry;
+			}
+
+			const startedAt = Date.now();
+			const result = await awaitCandidateWarm(session, warmEntry, remainingHoldMs);
+			if (session.suspended || session.generation !== gen) {
+				return;
+			}
+			remainingHoldMs = result.timedOut
+				? 0
+				: Math.max(0, remainingHoldMs - Math.max(0, Date.now() - startedAt));
+
+			if (result.ok) {
+				if (session.activeWarm === warmEntry) {
+					session.activeWarm = null;
+				}
+				session.index = candidateIdx;
+				dispatchCurrent(session);
+				return;
+			}
+
+			if (logger && typeof logger.warn === "function") {
+				logger.warn(
+					`[MMM-MediaBackground] Skipping asset ${candidate.id} after warm failure (${result.error || "failed"})`
+				);
+			}
+			if (session.activeWarm === warmEntry) {
+				session.activeWarm = null;
+			}
+		}
+
+		if (!session.suspended && session.generation === gen) {
+			scheduleNextTick(session);
+		}
 	}
 
 	return {
@@ -617,14 +846,18 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 					loadedAtMs: 0,
 					suspended: false,
 					loading: false,
+					generation: 1,
 					slideTimer: null,
-					retryTimer: null
+					retryTimer: null,
+					holdTimer: null,
+					activeWarm: null
 				};
 				sessions.set(identifier, session);
 				await loadAndShow(session);
 				return;
 			}
 
+			session.generation += 1;
 			clearTimers(session);
 			session.config = config;
 			session.suspended = false;
@@ -647,6 +880,7 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 		suspend(identifier) {
 			const session = sessions.get(identifier);
 			if (!session) return;
+			session.generation += 1;
 			session.suspended = true;
 			clearTimers(session);
 		},
@@ -654,6 +888,7 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 		resume(identifier) {
 			const session = sessions.get(identifier);
 			if (!session) return;
+			session.generation += 1;
 			session.suspended = false;
 			if (session.assets.length > 0) {
 				dispatchCurrent(session);
@@ -664,9 +899,11 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 
 		skipBrokenAsset(identifier, assetId) {
 			const session = sessions.get(identifier);
-			if (!session || !session.assets.length) return;
+			if (!session || session.suspended || !session.assets.length) return;
 			const current = session.assets[session.index];
 			if (current && current.id === assetId) {
+				session.generation += 1;
+				clearTimers(session);
 				session.assets.splice(session.index, 1);
 				if (!session.assets.length) {
 					loadAndShow(session).catch(() => {});
@@ -681,6 +918,7 @@ function createSlideshowController({ sendNotification, logger = null, nowFn = ()
 
 		stopAll() {
 			for (const session of sessions.values()) {
+				session.generation += 1;
 				session.suspended = true;
 				clearTimers(session);
 			}

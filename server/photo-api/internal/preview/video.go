@@ -86,11 +86,11 @@ func decodeVideoFrame(ctx context.Context, path string) (image.Image, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ffmpeg frame extract %s: %w (%s)", path, err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("%w: ffmpeg frame extract %s: %w (%s)", ErrMediaUnreadable, path, err, strings.TrimSpace(stderr.String()))
 	}
 	img, _, err := image.Decode(bytes.NewReader(stdout.Bytes()))
 	if err != nil {
-		return nil, fmt.Errorf("decode extracted video frame %s: %w", path, err)
+		return nil, fmt.Errorf("%w: decode extracted video frame %s: %w", ErrMediaUnreadable, path, err)
 	}
 	return img, nil
 }
@@ -140,8 +140,13 @@ func (c *Cache) GetOrGenerateVideoPreview(
 	cacheKey := key.cacheKey()
 	targetPath := key.diskPath(c.cacheDir)
 
-	res, err := c.getOrCreate(cacheKey, targetPath, func() ([]byte, error) {
-		return c.generateVideoPreviewBytes(ctx, key, sourcePath)
+	res, err := c.getOrCreate(ctx, cacheTarget{
+		assetID:    assetID,
+		sourcePath: sourcePath,
+		cacheKey:   cacheKey,
+		targetPath: targetPath,
+	}, func(genCtx context.Context) ([]byte, error) {
+		return c.generateVideoPreviewBytes(genCtx, key, sourcePath)
 	})
 	if err != nil {
 		return VideoPreview{}, err
@@ -211,17 +216,26 @@ func (c *Cache) generateVideoPreviewBytes(ctx context.Context, key videoPreviewK
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ffmpeg transcode %s: %w (%s)", sourcePath, err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("%w: ffmpeg transcode %s: %w (%s)", ErrMediaUnreadable, sourcePath, err, strings.TrimSpace(stderr.String()))
 	}
 	data := stdout.Bytes()
 	if len(data) == 0 {
-		return nil, fmt.Errorf("ffmpeg transcode %s produced empty output", sourcePath)
+		return nil, fmt.Errorf("%w: ffmpeg transcode %s produced empty output", ErrMediaUnreadable, sourcePath)
 	}
-	c.previewFPS.Store(key.cacheKey(), probePreviewFPS(transCtx, data, key.targetFPS))
+	effFPS, packetCount, probeErr := probePreviewStream(transCtx, data, key.targetFPS)
+	if probeErr != nil || packetCount == 0 {
+		return nil, fmt.Errorf("%w: ffmpeg transcode %s produced unreadable or empty video stream", ErrMediaUnreadable, sourcePath)
+	}
+	c.previewFPS.Store(key.cacheKey(), effFPS)
 	return data, nil
 }
 
 func probePreviewFPS(ctx context.Context, mp4Bytes []byte, fallbackFPS int) float64 {
+	fps, _, _ := probePreviewStream(ctx, mp4Bytes, fallbackFPS)
+	return fps
+}
+
+func probePreviewStream(ctx context.Context, mp4Bytes []byte, fallbackFPS int) (fps float64, packets int, err error) {
 	fallback := float64(max(1, fallbackFPS))
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -231,25 +245,37 @@ func probePreviewFPS(ctx context.Context, mp4Bytes []byte, fallbackFPS int) floa
 		"ffprobe",
 		"-v", "error",
 		"-select_streams", "v:0",
-		"-show_entries", "stream=r_frame_rate,avg_frame_rate",
+		"-count_packets",
+		"-show_entries", "stream=r_frame_rate,avg_frame_rate,nb_read_packets",
 		"-of", "csv=p=0",
 		"pipe:0",
 	)
 	cmd.Stdin = bytes.NewReader(mp4Bytes)
 	out, err := cmd.Output()
 	if err != nil {
-		return fallback
+		return fallback, 0, err
 	}
 	line := strings.TrimSpace(string(out))
 	if idx := strings.IndexByte(line, '\n'); idx >= 0 {
 		line = strings.TrimSpace(line[:idx])
 	}
-	for _, token := range strings.Split(line, ",") {
-		if fps := parseRationalFPS(token); fps >= 1 && fps <= float64(fallbackFPS)+0.5 {
-			return math.Min(fps, float64(fallbackFPS))
+	if line == "" {
+		return fallback, 0, errors.New("missing video stream")
+	}
+	tokens := strings.Split(line, ",")
+	packets = -1
+	if len(tokens) >= 3 {
+		if n, parseErr := strconv.Atoi(strings.TrimSpace(tokens[len(tokens)-1])); parseErr == nil {
+			packets = n
+		}
+		tokens = tokens[:len(tokens)-1]
+	}
+	for _, token := range tokens {
+		if parsed := parseRationalFPS(token); parsed >= 1 && parsed <= float64(fallbackFPS)+0.5 {
+			return math.Min(parsed, float64(fallbackFPS)), packets, nil
 		}
 	}
-	return fallback
+	return fallback, packets, nil
 }
 
 func parseRationalFPS(s string) float64 {

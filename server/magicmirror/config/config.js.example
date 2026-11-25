@@ -115,6 +115,8 @@ let config = {
 				maxVideoDurationSeconds: null, // Optional Playback Window override in seconds
 				videoFps: 30,
 				videoMuted: true,
+				prefetchNext: true,            // Lookahead warm Slide N+1 on photo-api while Slide N plays
+				coldCacheHoldMs: 8000,         // Max extra hold on Slide N (ms) while cold Slide N+1 warms
 				transitionSpeed: "1.2s",
 				backgroundSize: "contain",
 				showBlurredBackdrop: true,
