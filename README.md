@@ -1,20 +1,26 @@
 # Self-Hosted Digital Photo Frame
 
-A lightweight, self-hosted digital photo frame for a 27-inch 2K monitor powered by a Synology NAS (`server/`) and a Raspberry Pi (`client/`). It syncs Google Calendar, a Google Sheets to-do checklist, weather, world clock, and displays native 2K photos from your NAS with PIR motion sensor power control.
+A lightweight, self-hosted digital photo frame for a 27-inch 2K monitor powered by a Synology NAS (`server/`) and a Raspberry Pi (`client/`). It displays native 2K photos and silent videos from your NAS alongside Google Calendar, a Google Sheets to-do checklist, weather, world clock, and PIR motion sensor power control.
 
 <img src="https://github.com/user-attachments/assets/06a367d3-47bb-4454-9f28-7fd8bd04826f" height="500">
 
 ## Features
 
-- 🖼️ **2K Photo & Silent 30 fps Video Slideshow** - Lightweight pure-Go `photo-api` reads your Synology `Library` read-only (`:ro`), caches 2K photo `Preview`s (including `.heic`), pre-blurred `Backdrop`s, and silent `1080p`-max 30 fps video `Preview`s (`.mp4`/`.mov`/`.m4v`/`.webm`) in a 1 GB in-memory LRU cache, and streams MJPEG video across a bounded `Playback Window` through `MMM-MediaBackground` with zero extra codecs on the Raspberry Pi `Frame Client`
-- 📅 **Google Calendar** - Shows upcoming events in Vietnamese (`CUỘC HẸN SẮP TỚI`) with `DD/MM` start-end dates and 24-hour times, synced every minute from a Google Calendar share link or `.ics` feed
-- ✅ **Google Sheets To-Do** - Displays your checklist (`Việc cần làm`) synced every minute directly from a shared Google Spreadsheet ([`todo-template.csv`](./server/magicmirror/config/todo-template.csv)) with zero OAuth tokens
-- 🌤️ **Weather Forecast** - Multi-day OpenWeatherMap integration
-- 🌍 **World Clock** - Shows Vietnam time with flag
-- ⚡ **Live Config Reload** - Edits to `server/magicmirror/config/config.js` or `custom.css` reload connected displays automatically within 2 seconds without restarting Docker
-- 👋 **PIR Motion Sensor** - Automatically turns the display on/off based on motion on GPIO pin 24
-- ⏰ **Auto Scheduling** - Schedule-aware systemd service with separate weekday/weekend hours and hourly live config reload
-- 🔄 **Auto-Restart** - Automatically recovers from crashes via systemd and WebKitGTK auto-retry
+### Photos & Videos
+- 🖼️ **2K Photos + Silent Videos** — Displays your NAS photos (including iPhone `.heic`) and videos (`.mp4`, `.mov`, `.m4v`, `.webm`) with pre-blurred backgrounds, capture dates, album names, and offline city/country tags.
+- 🎬 **Smart Video Playback** — Plays videos silently at up to 30 fps with a 30-second default cap (`shortVideoMode: "advance"` moves right to the next slide when shorter clips finish, or `"loop"` to fill the window). Automatically filters out short iPhone Live Photo clips.
+- 🗓️ **Memories & Shuffle Without Repeats** — Surfaces "on this day" memories across past years (`anniversary`) and shuffles your full library (`random`) without repeating items back-to-back.
+- 🔒 **Safe & Quiet on Your NAS** — Mounts your library strictly read-only (`:ro`) so original files are never touched, caches previews in 1 GB of RAM with zero disk writes, and prefetches the next slide in the background for instant transitions.
+
+### Dashboard & Live Updates
+- 📅 **Google Calendar** — Shows upcoming events (`CUỘC HẸN SẮP TỚI`) with `DD/MM` start–end dates and 24-hour times, synced every minute from a Google Calendar share link or `.ics` feed.
+- ✅ **Google Sheets To-Do** — Syncs your checklist (`Việc cần làm`) every minute directly from a shared Google Spreadsheet ([`todo-template.csv`](./server/magicmirror/config/todo-template.csv)) with zero OAuth setup.
+- 🌤️ **Weather & World Clock** — Multi-day OpenWeatherMap forecast plus a secondary timezone clock with flag.
+- ⚡ **Instant Config Reload** — Edits to `config.js` or `custom.css` reload connected displays automatically within 2 seconds without restarting Docker; newly added NAS photos and videos appear automatically on background scans (every 30 minutes by default).
+
+### Raspberry Pi Display
+- 👋 **PIR Motion & Daily Schedule** — Automatically wakes and sleeps the monitor using a GPIO pin 24 motion sensor within separate weekday and weekend active hours.
+- 🪶 **Lightweight & Self-Healing** — Runs smoothly on a 1 GB Raspberry Pi 4 in a minimal WebKitGTK kiosk (all video decoding happens on the NAS, so zero extra codecs are needed on the Pi) with automatic systemd recovery.
 
 ## Architecture
 
@@ -39,7 +45,7 @@ A lightweight, self-hosted digital photo frame for a 27-inch 2K monitor powered 
 3. Edit `server/.env`:
    - Set `PUID` and `PGID` from step 1.
    - Set `PHOTOS_PATH` to your Synology Photos folder (for example `/volume1/photo`).
-   - Set `DATA_PATH` to a writable folder for the SQLite index and 1 GB preview cache.
+   - Set `DATA_PATH` to a writable folder for the SQLite metadata index (previews are cached in 1 GB RAM).
    - Set `API_KEY` to any secret string.
 4. Edit `server/magicmirror/config/config.js`:
    - Set `apiKey` in both `MMM-MediaBackground` `sources` entries to match `API_KEY` from `server/.env`.
@@ -69,6 +75,7 @@ A lightweight, self-hosted digital photo frame for a 27-inch 2K monitor powered 
 
 | What you want to change | File to edit | How it takes effect |
 | :--- | :--- | :--- |
+| Add, edit, or delete photos/videos | Your NAS `PHOTOS_PATH` folder | Indexed automatically every 30 minutes (`SCAN_INTERVAL`) without restarting |
 | Add or check off to-do items | Your Google Sheet | Updates on screen within 1 minute |
 | Add or edit calendar events | Your Google Calendar | Updates on screen within 1 minute |
 | Widget URLs, poll intervals, slideshow speed/mode, or weather location | `server/magicmirror/config/config.js` | Live-reloads connected displays automatically within 2 seconds |
@@ -97,7 +104,7 @@ MIT License - See repository for details
 ## Credits
 
 - [MagicMirror²](https://magicmirror.builders/) - Open source smart mirror platform
-- [MMM-ImmichSlideShow](https://github.com/pelaxa/MMM-ImmichSlideShow) - Photo slideshow integration
+- [MMM-ImmichSlideShow](https://github.com/pelaxa/MMM-ImmichSlideShow) - Inspiration for `MMM-MediaBackground` and anniversary slideshow workflows
 - [MMM-Worldclock](https://github.com/ulrichwisser/MMM-Worldclock) - Secondary timezone display
 - [MMM-OpenWeatherMapForecast](https://github.com/henrynvn09/MMM-OpenWeatherMapForecast) - Weather forecast
 - Community modules and contributors
