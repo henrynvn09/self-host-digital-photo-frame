@@ -56,6 +56,13 @@ type Options struct {
 	LivePhotoMaxSeconds float64
 }
 
+func DefaultOptions() Options {
+	return Options{
+		MinVideoSeconds:     DefaultMinVideoSeconds,
+		LivePhotoMaxSeconds: DefaultLivePhotoMaxSeconds,
+	}
+}
+
 var (
 	reFilenameDate  = regexp.MustCompile(`(?:^|[^0-9])(19\d{2}|20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)(?:[^0-9]|$)`)
 	rePathYearMonth = regexp.MustCompile(`(?:^|/)(19\d{2}|20\d{2})[-/_]([01]\d)(?:/|$)`)
@@ -103,22 +110,21 @@ type Scanner struct {
 }
 
 func New(libraryDir, geoNamesDir string, excludePatterns []string, st *store.Store, cache *preview.Cache, opts ...Options) *Scanner {
-	minVid := DefaultMinVideoSeconds
-	liveMax := DefaultLivePhotoMaxSeconds
+	resolved := DefaultOptions()
 	if len(opts) > 0 {
-		if opts[0].MinVideoSeconds > 0 {
-			minVid = opts[0].MinVideoSeconds
+		if opts[0].MinVideoSeconds >= 0 {
+			resolved.MinVideoSeconds = opts[0].MinVideoSeconds
 		}
-		if opts[0].LivePhotoMaxSeconds > 0 {
-			liveMax = opts[0].LivePhotoMaxSeconds
+		if opts[0].LivePhotoMaxSeconds >= 0 {
+			resolved.LivePhotoMaxSeconds = opts[0].LivePhotoMaxSeconds
 		}
 	}
 	return &Scanner{
 		libraryDir:          libraryDir,
 		geoNamesDir:         geoNamesDir,
 		excludePatterns:     excludePatterns,
-		minVideoSeconds:     minVid,
-		livePhotoMaxSeconds: liveMax,
+		minVideoSeconds:     resolved.MinVideoSeconds,
+		livePhotoMaxSeconds: resolved.LivePhotoMaxSeconds,
 		store:               st,
 		cache:               cache,
 		probed:              make(map[string]probedVideoDuration),
@@ -263,7 +269,7 @@ func (s *Scanner) Scan(ctx context.Context) (Stats, error) {
 				stats.Skipped++
 				continue
 			}
-			asset = buildAsset(c.fullPath, c.relSlash, c.mtime, c.size, c.modTime, loadGeo)
+			asset = buildAsset(c, loadGeo)
 		} else {
 			hasSiblingImage := imageStems[c.dirSlash][c.stemLower]
 			if inExisting && prev.Mtime == c.mtime && prev.Size == c.size && prev.DurationSec > 0 {
@@ -310,7 +316,7 @@ func (s *Scanner) Scan(ctx context.Context) (Stats, error) {
 			}
 
 			seen[c.relSlash] = true
-			asset = buildVideoAssetFromMeta(meta, c.relSlash, c.mtime, c.size, c.modTime, loadGeo)
+			asset = buildVideoAssetFromMeta(meta, c, loadGeo)
 		}
 
 		if err := s.store.UpsertAsset(ctx, asset); err != nil {
@@ -399,46 +405,61 @@ func DeterministicUUID(relPath string) string {
 		sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
 }
 
-func buildAsset(fullPath, relSlash string, mtime, size int64, modTime time.Time, loadGeo func() *geo.Resolver) store.Asset {
-	a := store.Asset{
-		ID:          DeterministicUUID(relSlash),
-		RelPath:     relSlash,
-		MediaType:   "IMAGE",
-		Mtime:       mtime,
-		Size:        size,
-		Album:       deriveAlbum(relSlash),
+func newBaseAsset(c scanCandidate, mediaType string) store.Asset {
+	return store.Asset{
+		ID:          DeterministicUUID(c.relSlash),
+		RelPath:     c.relSlash,
+		MediaType:   mediaType,
+		Mtime:       c.mtime,
+		Size:        c.size,
+		Album:       deriveAlbum(c.relSlash),
 		Orientation: 1,
 		IndexedAt:   time.Now().UTC(),
 	}
+}
 
-	if w, h := readImageDimensions(fullPath); w > 0 && h > 0 {
+func applyGeoLocation(a *store.Asset, lat, lon float64, loadGeo func() *geo.Resolver) {
+	if loadGeo == nil || (lat == 0 && lon == 0) {
+		return
+	}
+	if r := loadGeo(); r != nil {
+		if loc, ok := r.Lookup(lat, lon); ok {
+			a.City = loc.City
+			a.State = loc.State
+			a.Country = loc.Country
+		}
+	}
+}
+
+func applyTakenDate(a *store.Asset, captureDate time.Time, relSlash string, modTime time.Time) {
+	a.TakenAt = resolveDate(captureDate, relSlash, modTime)
+	a.TakenYear = a.TakenAt.UTC().Year()
+	a.TakenMonth = int(a.TakenAt.UTC().Month())
+	a.TakenDay = a.TakenAt.UTC().Day()
+}
+
+func buildAsset(c scanCandidate, loadGeo func() *geo.Resolver) store.Asset {
+	a := newBaseAsset(c, "IMAGE")
+
+	if w, h := readImageDimensions(c.fullPath); w > 0 && h > 0 {
 		a.Width = w
 		a.Height = h
 	}
 
 	var exifDate time.Time
-	if x := decodeEXIF(fullPath); x != nil {
+	if x := decodeEXIF(c.fullPath); x != nil {
 		exifDate = extractEXIFDate(x)
 		if tag, err := x.Get(exif.Orientation); err == nil {
 			if v, err := tag.Int(0); err == nil && v >= 1 && v <= 8 {
 				a.Orientation = v
 			}
 		}
-		if lat, lon, err := x.LatLong(); err == nil && (lat != 0 || lon != 0) {
-			if r := loadGeo(); r != nil {
-				if loc, ok := r.Lookup(lat, lon); ok {
-					a.City = loc.City
-					a.State = loc.State
-					a.Country = loc.Country
-				}
-			}
+		if lat, lon, err := x.LatLong(); err == nil {
+			applyGeoLocation(&a, lat, lon, loadGeo)
 		}
 	}
 
-	a.TakenAt = resolveDate(exifDate, relSlash, modTime)
-	a.TakenYear = a.TakenAt.UTC().Year()
-	a.TakenMonth = int(a.TakenAt.UTC().Month())
-	a.TakenDay = a.TakenAt.UTC().Day()
+	applyTakenDate(&a, exifDate, c.relSlash, c.modTime)
 	return a
 }
 

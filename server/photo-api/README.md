@@ -31,7 +31,7 @@ Lightweight, high-performance pure-Go media indexing and serving service built f
 | `VIDEO_FPS` | `30` | Maximum video frame rate cap (`min(30, VIDEO_FPS, source_fps)`) |
 | `MAX_CONCURRENT_VIDEO_TRANSCODES` | `1` | Max concurrent `ffmpeg` video transcodes (`-threads 2`) |
 | `MIN_VIDEO_SECONDS` | `3.0` | Minimum video duration in seconds; shorter micro-clips are skipped and pruned |
-| `LIVE_PHOTO_MAX_SECONDS` | `3.5` | Max duration in seconds for excluding paired Live Photo companion clips sharing directory and filename stem with a sibling image |
+| `LIVE_PHOTO_MAX_SECONDS` | `3.5` | Max duration in seconds for excluding paired Live Photo companion clips sharing directory and filename stem with a sibling photo `Asset` |
 | `PREBAKE_BLUR` | `false` | When `true`, pre-composites blurred background bars on the NAS |
 | `FRAME_WIDTH` | `1440` | Target frame width when `PREBAKE_BLUR=true` |
 | `FRAME_HEIGHT` | `2560` | Target frame height when `PREBAKE_BLUR=true` |

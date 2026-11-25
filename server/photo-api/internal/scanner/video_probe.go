@@ -67,6 +67,14 @@ type videoProbeMeta struct {
 	hasGPS      bool
 }
 
+func parsePositiveFloat(raw string) (float64, bool) {
+	d, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || d <= 0 || math.IsNaN(d) || math.IsInf(d, 0) {
+		return 0, false
+	}
+	return d, true
+}
+
 func probeVideo(ctx context.Context, fullPath string) (videoProbeMeta, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, ffprobeTimeout)
 	defer cancel()
@@ -91,7 +99,7 @@ func probeVideo(ctx context.Context, fullPath string) (videoProbeMeta, error) {
 	}
 
 	var meta videoProbeMeta
-	if d, err := strconv.ParseFloat(strings.TrimSpace(payload.Format.Duration), 64); err == nil && d > 0 && !math.IsNaN(d) && !math.IsInf(d, 0) {
+	if d, ok := parsePositiveFloat(payload.Format.Duration); ok {
 		meta.durationSec = d
 	}
 
@@ -101,7 +109,7 @@ func probeVideo(ctx context.Context, fullPath string) (videoProbeMeta, error) {
 		}
 		w, h := st.Width, st.Height
 		if meta.durationSec <= 0 {
-			if d, err := strconv.ParseFloat(strings.TrimSpace(st.Duration), 64); err == nil && d > 0 && !math.IsNaN(d) && !math.IsInf(d, 0) {
+			if d, ok := parsePositiveFloat(st.Duration); ok {
 				meta.durationSec = d
 			}
 		}
@@ -186,32 +194,33 @@ func parseVideoTimestamp(raw string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func extractVideoCaptureDate(payload ffprobePayload) time.Time {
+func firstTagMatch[T any](payload ffprobePayload, keys []string, parse func(string) (T, bool)) (T, bool) {
 	tagMaps := tagMapsInPriority(payload)
-	for _, key := range []string{"com.apple.quicktime.creationdate", "creation_time"} {
+	for _, key := range keys {
 		for _, tags := range tagMaps {
 			if raw, ok := lookupTagValue(tags, key); ok {
-				if t, ok := parseVideoTimestamp(raw); ok {
-					return t
+				if parsed, ok := parse(raw); ok {
+					return parsed, true
 				}
 			}
 		}
 	}
-	return time.Time{}
+	var zero T
+	return zero, false
+}
+
+func extractVideoCaptureDate(payload ffprobePayload) time.Time {
+	t, _ := firstTagMatch(payload, []string{"com.apple.quicktime.creationdate", "creation_time"}, parseVideoTimestamp)
+	return t
 }
 
 func extractVideoGPS(payload ffprobePayload) (float64, float64, bool) {
-	tagMaps := tagMapsInPriority(payload)
-	for _, key := range []string{"com.apple.quicktime.location.ISO6709", "location"} {
-		for _, tags := range tagMaps {
-			if raw, ok := lookupTagValue(tags, key); ok {
-				if lat, lon, ok := parseISO6709(raw); ok {
-					return lat, lon, true
-				}
-			}
-		}
-	}
-	return 0, 0, false
+	type coords struct{ lat, lon float64 }
+	c, ok := firstTagMatch(payload, []string{"com.apple.quicktime.location.ISO6709", "location"}, func(raw string) (coords, bool) {
+		lat, lon, ok := parseISO6709(raw)
+		return coords{lat: lat, lon: lon}, ok
+	})
+	return c.lat, c.lon, ok
 }
 
 func parseISO6709(raw string) (float64, float64, bool) {
@@ -303,34 +312,15 @@ func extractStreamRotation(st ffprobeStream) int {
 	return 0
 }
 
-func buildVideoAssetFromMeta(meta videoProbeMeta, relSlash string, mtime, size int64, modTime time.Time, loadGeo func() *geo.Resolver) store.Asset {
-	a := store.Asset{
-		ID:          DeterministicUUID(relSlash),
-		RelPath:     relSlash,
-		MediaType:   "VIDEO",
-		DurationSec: meta.durationSec,
-		Mtime:       mtime,
-		Size:        size,
-		Album:       deriveAlbum(relSlash),
-		Orientation: 1,
-		Width:       meta.width,
-		Height:      meta.height,
-		IndexedAt:   time.Now().UTC(),
-	}
+func buildVideoAssetFromMeta(meta videoProbeMeta, c scanCandidate, loadGeo func() *geo.Resolver) store.Asset {
+	a := newBaseAsset(c, "VIDEO")
+	a.DurationSec = meta.durationSec
+	a.Width = meta.width
+	a.Height = meta.height
 
-	if meta.hasGPS && loadGeo != nil {
-		if r := loadGeo(); r != nil {
-			if loc, ok := r.Lookup(meta.lat, meta.lon); ok {
-				a.City = loc.City
-				a.State = loc.State
-				a.Country = loc.Country
-			}
-		}
+	if meta.hasGPS {
+		applyGeoLocation(&a, meta.lat, meta.lon, loadGeo)
 	}
-
-	a.TakenAt = resolveDate(meta.captureDate, relSlash, modTime)
-	a.TakenYear = a.TakenAt.UTC().Year()
-	a.TakenMonth = int(a.TakenAt.UTC().Month())
-	a.TakenDay = a.TakenAt.UTC().Day()
+	applyTakenDate(&a, meta.captureDate, c.relSlash, c.modTime)
 	return a
 }

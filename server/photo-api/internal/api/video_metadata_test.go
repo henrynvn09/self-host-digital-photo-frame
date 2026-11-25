@@ -19,7 +19,6 @@ import (
 	"photo-api/internal/config"
 	"photo-api/internal/preview"
 	"photo-api/internal/scanner"
-	"photo-api/internal/store"
 )
 
 type videoMetaSpec struct {
@@ -86,21 +85,8 @@ func appendTokyoGeoNamesFixture(t *testing.T, geoDir string) {
 
 func setupConfigDrivenEnv(t *testing.T, cacheMode string) *testEnv {
 	t.Helper()
-	photosDir := t.TempDir()
-	dataDir := t.TempDir()
-	geoDir := t.TempDir()
-	writeGeoNamesFixture(t, geoDir)
-	appendTokyoGeoNamesFixture(t, geoDir)
-
 	cfg := config.Load()
-
-	st, err := store.Open(dataDir)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-
-	cache, err := preview.NewCache(dataDir, preview.Options{
+	return newTestEnv(t, preview.Options{
 		Mode:           cacheMode,
 		MaxWidth:       cfg.MaxWidth,
 		MaxHeight:      cfg.MaxHeight,
@@ -109,27 +95,10 @@ func setupConfigDrivenEnv(t *testing.T, cacheMode string) *testEnv {
 		VideoMaxWidth:  cfg.VideoMaxWidth,
 		VideoMaxHeight: cfg.VideoMaxHeight,
 		VideoFPS:       cfg.VideoFPS,
-	})
-	if err != nil {
-		t.Fatalf("new cache: %v", err)
-	}
-
-	sc := scanner.New(photosDir, geoDir, []string{"Screenshots"}, st, cache, scanner.Options{
+	}, scanner.Options{
 		MinVideoSeconds:     cfg.MinVideoSeconds,
 		LivePhotoMaxSeconds: cfg.LivePhotoMaxSeconds,
-	})
-	srv := api.NewServer(photosDir, "secret-key", st, sc, cache)
-	return &testEnv{
-		photosDir:   photosDir,
-		dataDir:     dataDir,
-		geoDir:      geoDir,
-		apiKey:      "secret-key",
-		store:       st,
-		cache:       cache,
-		scanner:     sc,
-		server:      srv,
-		httpHandler: srv.Handler(),
-	}
+	}, appendTokyoGeoNamesFixture)
 }
 
 func TestVideoQuickTimeDatesAndISO6709GeoNames(t *testing.T) {
@@ -351,6 +320,15 @@ func TestVideoMicroClipAndLivePhotoFiltering(t *testing.T) {
 	liveImg2Rel := "2023/Trip/img_2000.png"
 	writePNG(t, filepath.Join(env.photosDir, filepath.FromSlash(liveImg2Rel)), 320, 240)
 
+	// 3b. Exact 3.5s paired Live Photo companion (IMG_3500.JPG + IMG_3500.MOV of 3.5s) -> photo KEPT, .MOV EXCLUDED (<= 3.5s boundary)
+	liveImg35Rel := "2023/Trip/IMG_3500.JPG"
+	writeJPEGWithEXIF(t, filepath.Join(env.photosDir, filepath.FromSlash(liveImg35Rel)),
+		320, 240, "2023:07:15 10:30:00", 1, 33.8992, -118.0689)
+	liveMov35Rel := "2023/Trip/IMG_3500.MOV"
+	synthesizeTaggedVideo(t, filepath.Join(env.photosDir, filepath.FromSlash(liveMov35Rel)), videoMetaSpec{
+		durationSec: 3.5,
+	})
+
 	// 4. Standalone 3.2s video in the SAME directory as photos with DIFFERENT stems -> KEPT
 	standalone32Rel := "2023/Trip/standalone_3_2s.mov"
 	synthesizeTaggedVideo(t, filepath.Join(env.photosDir, filepath.FromSlash(standalone32Rel)), videoMetaSpec{
@@ -412,6 +390,7 @@ func TestVideoMicroClipAndLivePhotoFiltering(t *testing.T) {
 	wantPaths := []string{
 		exact30Rel,
 		liveImg1Rel,
+		liveImg35Rel,
 		longStemImgRel,
 		longStemMovRel,
 		liveImg2Rel,
@@ -424,10 +403,36 @@ func TestVideoMicroClipAndLivePhotoFiltering(t *testing.T) {
 		t.Fatalf("indexed paths mismatch:\n got: %v\nwant: %v", gotPaths, wantPaths)
 	}
 
-	for _, excludedRel := range []string{microRel, liveMov1Rel, liveMov2Rel} {
+	for _, excludedRel := range []string{microRel, liveMov1Rel, liveMov2Rel, liveMov35Rel} {
 		id := scanner.DeterministicUUID(excludedRel)
 		if rec := env.doJSON(t, "GET", "/api/assets/"+id, nil, true); rec.Code != http.StatusNotFound {
 			t.Fatalf("expected excluded video %s to return 404, got %d", excludedRel, rec.Code)
+		}
+	}
+
+	// Verify setting MIN_VIDEO_SECONDS=0 and LIVE_PHOTO_MAX_SECONDS=0 disables both filters.
+	t.Setenv("MIN_VIDEO_SECONDS", "0")
+	t.Setenv("LIVE_PHOTO_MAX_SECONDS", "0")
+	disabledCfg := config.Load()
+	if disabledCfg.MinVideoSeconds != 0 || disabledCfg.LivePhotoMaxSeconds != 0 {
+		t.Fatalf("expected 0 thresholds from config.Load(), got min=%v live=%v", disabledCfg.MinVideoSeconds, disabledCfg.LivePhotoMaxSeconds)
+	}
+	disabledScanner := scanner.New(env.photosDir, env.geoDir, []string{"Screenshots"}, env.store, env.cache, scanner.Options{
+		MinVideoSeconds:     disabledCfg.MinVideoSeconds,
+		LivePhotoMaxSeconds: disabledCfg.LivePhotoMaxSeconds,
+	})
+	disabledSrv := api.NewServer(env.photosDir, env.apiKey, env.store, disabledScanner, env.cache)
+	scanDisabledReq := httptest.NewRequest("POST", "/api/admin/scan", nil)
+	scanDisabledReq.Header.Set("x-api-key", env.apiKey)
+	scanDisabledRec := httptest.NewRecorder()
+	disabledSrv.Handler().ServeHTTP(scanDisabledRec, scanDisabledReq)
+	if scanDisabledRec.Code != http.StatusOK {
+		t.Fatalf("disabled-filter scan failed: %d", scanDisabledRec.Code)
+	}
+	for _, rel := range []string{microRel, liveMov1Rel, liveMov2Rel, liveMov35Rel} {
+		id := scanner.DeterministicUUID(rel)
+		if rec := env.doJSON(t, "GET", "/api/assets/"+id, nil, true); rec.Code != http.StatusOK {
+			t.Fatalf("expected %s indexed when filters disabled (=0), got %d", rel, rec.Code)
 		}
 	}
 }
@@ -469,7 +474,7 @@ func TestNewlyExcludedVideosPrunedAndEvictedFromCache(t *testing.T) {
 
 			// Warm all 3 renditions (preview poster, backdrop, and MJPEG video preview) via HTTP!
 			if rec := env.doJSON(t, "GET", "/api/assets/"+movID+"/thumbnail", nil, true); rec.Code != http.StatusOK {
-				t.Fatalf("warm thumbnail failed: %d", rec.Code)
+				t.Fatalf("warm preview failed: %d", rec.Code)
 			}
 			if rec := env.doJSON(t, "GET", "/api/assets/"+movID+"/backdrop", nil, true); rec.Code != http.StatusOK {
 				t.Fatalf("warm backdrop failed: %d", rec.Code)
@@ -564,7 +569,7 @@ func TestNewlyExcludedVideosPrunedAndEvictedFromCache(t *testing.T) {
 				t.Fatalf("scan 3 failed: %d", rec.Code)
 			}
 			if rec := env.doJSON(t, "GET", "/api/assets/"+clip4ID+"/thumbnail", nil, true); rec.Code != http.StatusOK {
-				t.Fatalf("warm clip4 thumbnail failed: %d", rec.Code)
+				t.Fatalf("warm clip4 preview failed: %d", rec.Code)
 			}
 			if rec := env.doJSON(t, "GET", "/api/assets/"+clip4ID+"/backdrop", nil, true); rec.Code != http.StatusOK {
 				t.Fatalf("warm clip4 backdrop failed: %d", rec.Code)

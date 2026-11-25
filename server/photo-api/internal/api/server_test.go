@@ -42,13 +42,16 @@ type testEnv struct {
 	httpHandler http.Handler
 }
 
-func setupTestEnv(t *testing.T, cacheMaxMB int64, cacheMode ...string) *testEnv {
+func newTestEnv(t *testing.T, previewOpts preview.Options, scanOpts scanner.Options, setupGeo ...func(*testing.T, string)) *testEnv {
 	t.Helper()
 	photosDir := t.TempDir()
 	dataDir := t.TempDir()
 	geoDir := t.TempDir()
 
 	writeGeoNamesFixture(t, geoDir)
+	for _, fn := range setupGeo {
+		fn(t, geoDir)
+	}
 
 	st, err := store.Open(dataDir)
 	if err != nil {
@@ -56,23 +59,12 @@ func setupTestEnv(t *testing.T, cacheMaxMB int64, cacheMode ...string) *testEnv 
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	mode := "memory"
-	if len(cacheMode) > 0 && cacheMode[0] != "" {
-		mode = cacheMode[0]
-	}
-
-	cache, err := preview.NewCache(dataDir, preview.Options{
-		Mode:        mode,
-		MaxWidth:    2560,
-		MaxHeight:   2560,
-		JPEGQuality: 88,
-		MaxMB:       cacheMaxMB,
-	})
+	cache, err := preview.NewCache(dataDir, previewOpts)
 	if err != nil {
 		t.Fatalf("new cache: %v", err)
 	}
 
-	sc := scanner.New(photosDir, geoDir, []string{"Screenshots"}, st, cache, scanner.Options{MinVideoSeconds: 0.5})
+	sc := scanner.New(photosDir, geoDir, []string{"Screenshots"}, st, cache, scanOpts)
 	srv := api.NewServer(photosDir, "secret-key", st, sc, cache)
 
 	return &testEnv{
@@ -86,6 +78,23 @@ func setupTestEnv(t *testing.T, cacheMaxMB int64, cacheMode ...string) *testEnv 
 		server:      srv,
 		httpHandler: srv.Handler(),
 	}
+}
+
+func setupTestEnv(t *testing.T, cacheMaxMB int64, cacheMode ...string) *testEnv {
+	t.Helper()
+	mode := "memory"
+	if len(cacheMode) > 0 && cacheMode[0] != "" {
+		mode = cacheMode[0]
+	}
+	scanOpts := scanner.DefaultOptions()
+	scanOpts.MinVideoSeconds = 0.5
+	return newTestEnv(t, preview.Options{
+		Mode:        mode,
+		MaxWidth:    2560,
+		MaxHeight:   2560,
+		JPEGQuality: 88,
+		MaxMB:       cacheMaxMB,
+	}, scanOpts)
 }
 
 func (e *testEnv) doJSON(t *testing.T, method, path string, body any, auth bool) *httptest.ResponseRecorder {

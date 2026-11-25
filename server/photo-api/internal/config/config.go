@@ -78,7 +78,7 @@ func getEnvInt(key string, fallback int) int {
 
 func getEnvFloat(key string, fallback float64) float64 {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) && f > 0 {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) && f >= 0 {
 			return f
 		}
 	}
