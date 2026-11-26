@@ -5,7 +5,7 @@ import signal
 import subprocess
 import sys
 import time
-from threading import Timer
+from threading import Event, Timer
 
 VCGENCMD = "/usr/bin/vcgencmd"
 
@@ -146,10 +146,13 @@ def main() -> int:
         t.start()
         state["timer"] = t
 
+    stop_event = Event()
+
     def on_stop(_sig, _frame):
         log("Stopping PIR sensor")
         state["running"] = False
         cancel_timer()
+        stop_event.set()
 
     signal.signal(signal.SIGTERM, on_stop)
     signal.signal(signal.SIGINT, on_stop)
@@ -158,7 +161,8 @@ def main() -> int:
 
     try:
         while state["running"]:
-            time.sleep(3600)
+            if stop_event.wait(3600):
+                break
             cfg = load_config()
             delay = cfg["SHUTOFF_DELAY"]
             debug = cfg["DEBUG"]

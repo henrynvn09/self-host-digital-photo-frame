@@ -2,7 +2,13 @@
 import os
 import signal
 import sys
-import gi
+
+# Disable WebKitGTK GPU compositing/DMA-BUF on 1 GB Raspberry Pi X11:
+# avoids massive shared-memory spikes (OOM freezes) and missing foreground <img> layers.
+os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
+os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+
+import gi  # noqa: E402
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
@@ -19,14 +25,12 @@ def build_kiosk(url: str) -> Gtk.Window:
     ctx.set_cache_model(WebKit2.CacheModel.DOCUMENT_VIEWER)
 
     settings = WebKit2.Settings()
-    settings.set_enable_accelerated_2d_canvas(True)
-    settings.set_enable_webgl(True)
+    settings.set_enable_webgl(False)
     settings.set_enable_smooth_scrolling(False)
     settings.set_enable_page_cache(False)
-    settings.set_enable_offline_web_application_cache(False)
     if hasattr(settings, "set_hardware_acceleration_policy"):
         settings.set_hardware_acceleration_policy(
-            WebKit2.HardwareAccelerationPolicy.ALWAYS
+            WebKit2.HardwareAccelerationPolicy.NEVER
         )
 
     webview = WebKit2.WebView.new_with_context(ctx)
