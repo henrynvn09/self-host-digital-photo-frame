@@ -48,9 +48,27 @@ if [[ -f "${STACK_DIR}/.env" ]]; then
 	fi
 fi
 
-echo "-> Building and restarting Docker Compose services..."
-docker compose up -d --build --remove-orphans
+PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "${STACK_DIR}" | tr '[:upper:]' '[:lower:]')}"
+
+echo "-> Building Docker images..."
+docker compose -p "${PROJECT_NAME}" build
+
+# If an existing container with the same fixed container_name belongs to a different
+# Compose project (for example created earlier under a different name in Container Manager),
+# remove it so `docker compose up -d` never fails with a name conflict.
+for cname in photo-api magicmirror; do
+	if docker inspect "${cname}" >/dev/null 2>&1; then
+		existing_proj="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "${cname}" 2>/dev/null || true)"
+		if [[ "${existing_proj}" != "${PROJECT_NAME}" ]]; then
+			echo "-> Replacing ${cname} from previous project '${existing_proj:-none}'..."
+			docker rm -f "${cname}"
+		fi
+	fi
+done
+
+echo "-> Starting Docker Compose services (project: ${PROJECT_NAME})..."
+docker compose -p "${PROJECT_NAME}" up -d --remove-orphans
 
 echo "-> Current container status:"
-docker compose ps
+docker compose -p "${PROJECT_NAME}" ps
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Update complete!"
