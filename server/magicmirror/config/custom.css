@@ -54,3 +54,10 @@ body {
   right: 100px !important;
   border-radius: 0px !important;
 }
+
+@media (max-width: 1100px) {
+  .module.clock .date {
+    font-size: 22px;
+    line-height: 28px;
+  }
+}
