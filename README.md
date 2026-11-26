@@ -32,31 +32,80 @@ A lightweight, self-hosted digital photo frame for a 27-inch 2K monitor powered 
 
 ## Step 1. Set Up the Synology NAS (`server/`)
 
-1. SSH into your NAS and find your user and group IDs:
+You can set up everything directly in the **Synology DSM web interface** — no SSH or terminal required.
+
+### Before You Start
+Open **Package Center** in DSM and make sure these two Synology packages are installed:
+- **Container Manager** (DSM 7.2+)
+- **Text Editor** (lets you edit config files right inside File Station)
+
+### 1. Copy the `server/` files to your NAS
+1. Download this repository as a ZIP (**Code > Download ZIP** on GitHub) and unzip it on your computer.
+2. Open **File Station** in DSM and open the `docker` shared folder.
+3. Click **Create > Create folder** and name it `photoframe` (creating `/docker/photoframe`).
+4. Open `/docker/photoframe` and upload everything inside this repo's `server/` folder (`docker-compose.yml`, `.env.example`, `photo-api/`, `magicmirror/`).
+5. Inside `/docker/photoframe`, click **Create > Create folder** again and name it `data` (this stores the photo index).
+
+### 2. Configure `.env` (NAS folders & secret key)
+1. In **File Station**, open `/docker/photoframe` and double-click `.env.example` to open it in **Text Editor**.
+2. Click **File > Save As...** and save it as `.env` in the same `/docker/photoframe` folder.
+3. Update these lines in `.env`:
+   - `PHOTOS_PATH` — path to your Synology Photos folder:
+     - Shared Space: `/volume1/photo`
+     - Personal Space: `/volume1/homes/<your-username>/Photos`
+     *(Tip: right-click your photos folder in File Station → **Properties** → check **Location**.)*
+   - `DATA_PATH` — set to `/volume1/docker/photoframe/data`.
+   - `API_KEY` — change to any random secret string (you will paste this same value in step 3).
+   - `TZ` — set to your timezone (for example `America/Los_Angeles`).
+   - `PUID` / `PGID` — keep the default `1026` / `100` (works for most Synology admin accounts).
+     <details>
+     <summary>Need to check your exact PUID/PGID without SSH?</summary>
+
+     1. Open **Control Panel > Task Scheduler > Create > Scheduled Task > User-defined script**.
+     2. Under **General**, set **User** to the DSM account that has read access to your Photos folder.
+     3. Under **Task Settings > Run command**, enter `id` and click **OK**.
+     4. Select the new task, click **Run**, then click **Action > View Result** to see `uid=...` (`PUID`) and `gid=...` (`PGID`). You can delete the task afterward.
+     </details>
+4. Click **File > Save**.
+
+### 3. Configure `config.js` (Calendar, To-Do, Weather & Photos)
+1. In **File Station**, open `/docker/photoframe/magicmirror/config` and double-click `config.js.example`.
+2. Click **File > Save As...** and save it as `config.js` in the same folder.
+3. Update these 4 sections in `config.js`:
+   - **Photos (`MMM-MediaBackground`)**: Replace both `"CHANGE_ME_TO_MATCH_API_KEY_IN_ENV"` values with the exact `API_KEY` from your `.env` file.
+   - **Google Calendar (`calendar`)**: Replace `YOUR_GOOGLE_CALENDAR_CID_OR_ICS_URL` with your Google Calendar share link (`https://calendar.google.com/calendar/u/0?cid=...`) or `.ics` link.
+   - **Google Sheets To-Do (`MMM-GoogleSheetsToDo`)**: Import [`todo-template.csv`](./server/magicmirror/config/todo-template.csv) into Google Sheets, add checkboxes (**Insert > Checkbox** on Column A), click **Share > Anyone with the link (Viewer)**, and paste the link into `spreadsheetUrl`.
+   - **Weather (`MMM-OpenWeatherMapForecast`)**: Fill in your OpenWeatherMap `apikey`, `latitude`, and `longitude`.
+4. Click **File > Save**.
+
+### 4. Start the Stack in Container Manager
+1. Open **Container Manager** from the DSM Main Menu.
+2. In the left sidebar, click **Project**, then click **Create**.
+3. Fill in the wizard:
+   - **Project name**: `photoframe`
+   - **Path**: Click **Set Path** and select `/docker/photoframe`
+   - **Source**: Select **Use existing docker-compose.yml**
+4. Click **Next**, skip Web Portal settings (**Next**), leave **Start the project once it is created** checked, and click **Done**.
+5. Wait 2–5 minutes for the first build to finish. Once both `photo-api` and `magicmirror` show a green **Running** status, open `http://<nas-ip>:8036` in any browser to verify your frame.
+
+<details>
+<summary>Prefer SSH / Command Line?</summary>
+
+1. SSH into your NAS and check your user/group IDs:
    ```bash
    id
    ```
-2. Copy the environment and MagicMirror config templates:
+2. Copy and edit the templates:
    ```bash
    cd server
-   cp .env.example .env
-   cp magicmirror/config/config.js.example magicmirror/config/config.js
+   cp .env.example .env && nano .env
+   cp magicmirror/config/config.js.example magicmirror/config/config.js && nano magicmirror/config/config.js
    ```
-3. Edit `server/.env`:
-   - Set `PUID` and `PGID` from step 1.
-   - Set `PHOTOS_PATH` to your Synology Photos folder (for example `/volume1/photo`).
-   - Set `DATA_PATH` to a writable folder for the SQLite metadata index (previews are cached in 1 GB RAM).
-   - Set `API_KEY` to any secret string.
-4. Edit `server/magicmirror/config/config.js`:
-   - Set `apiKey` in both `MMM-MediaBackground` `sources` entries to match `API_KEY` from `server/.env`.
-   - Paste your Google Calendar share link (`https://calendar.google.com/calendar/u/0?cid=...`) or `.ics` link into `resolveGoogleCalendarUrl(...)` under `calendar`.
-   - Import [`server/magicmirror/config/todo-template.csv`](./server/magicmirror/config/todo-template.csv) into Google Sheets (**Insert > Checkbox** on Column A), share as **Anyone with the link (Viewer)**, and paste its URL into `spreadsheetUrl` under `MMM-GoogleSheetsToDo`.
-   - Set your OpenWeatherMap `apikey`, `latitude`, and `longitude` under `MMM-OpenWeatherMapForecast`.
-5. Build and start the containers:
+3. Build and start the containers:
    ```bash
    docker compose up -d --build
    ```
-   Verify the display in any browser at `http://<nas-ip>:8036`.
+</details>
 
 ## Step 2. Set Up the Raspberry Pi (`client/`)
 
@@ -81,7 +130,7 @@ A lightweight, self-hosted digital photo frame for a 27-inch 2K monitor powered 
 | Widget URLs, poll intervals, slideshow speed/mode, or weather location | `server/magicmirror/config/config.js` | Live-reloads connected displays automatically within 2 seconds |
 | Font sizes, margins, or card opacity | `server/magicmirror/config/custom.css` | Live-reloads connected displays automatically within 2 seconds |
 | Display active hours (`MONDAY_FRIDAY`, `SATURDAY_SUNDAY`) or PIR timeout (`PIR_TIMEOUT_MINUTES`) | `client/config.conf` | Reloads automatically on the Pi every hour (or immediately with `sudo systemctl restart digitalframe.service`) |
-| NAS photo folder path or cache size | `server/.env` | Run `docker compose up -d` in `server/` |
+| NAS photo folder path or cache size | `server/.env` | In **Container Manager > Project > photoframe**, click **Action > Build** (or run `docker compose up -d` in `server/`) |
 
 ## Folder Guides
 

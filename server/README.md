@@ -2,24 +2,42 @@
 
 Runs `photo-api` (pure-Go 2K photo indexer and 1 GB LRU cache on internal port `2283`) and `magicmirror` (port `8036`) on one private Docker network (~146 MiB total RAM).
 
-## 3-step setup on Synology NAS
+## Setup via Synology DSM UI (No SSH Needed)
 
-1. **Find your DSM user ID** via SSH (`id <username>`, usually `PUID=1026` and `PGID=100`) and create a writable data folder (for example `/volume1/docker/photoframe/data`).
-2. **Create `.env` and `magicmirror/config/config.js`**:
-   ```bash
-   cd server
-   cp .env.example .env && nano .env
-   cp magicmirror/config/config.js.example magicmirror/config/config.js && nano magicmirror/config/config.js
-   ```
-   Set `PHOTOS_PATH` (your Synology Photos path, mounted read-only `:ro`), `DATA_PATH`, and a matching `API_KEY` in both files.
-3. **Start the stack**:
-   ```bash
-   docker compose up -d --build
-   ```
+Make sure **Container Manager** (DSM 7.2+) and **Text Editor** are installed from **Package Center**.
 
-Open `http://<nas-ip>:8036` in any browser (or point `client/config.conf` on the Raspberry Pi to `<nas-ip>`). `magicmirror/config/` is mounted as a directory and watched with `server:watch`, so edits to `magicmirror/config/config.js` or `magicmirror/config/custom.css` reload automatically on connected displays without restarting the container.
+1. **Upload files in File Station**:
+   - Create `/docker/photoframe` and upload all files from this `server/` folder into it.
+   - Create an empty `/docker/photoframe/data` folder for the SQLite index.
+2. **Create `.env` in Text Editor**:
+   - Open `/docker/photoframe/.env.example`, click **File > Save As...**, and save as `.env`.
+   - Set `PHOTOS_PATH` (`/volume1/photo` for Shared Space or `/volume1/homes/<username>/Photos` for Personal Space), `DATA_PATH` (`/volume1/docker/photoframe/data`), `TZ`, and a secret `API_KEY`.
+   - Keep `PUID=1026` and `PGID=100` (the default for most Synology admin accounts; if needed, verify via **Control Panel > Task Scheduler > User-defined script** running `id`).
+3. **Create `config.js` in Text Editor**:
+   - Open `/docker/photoframe/magicmirror/config/config.js.example`, click **File > Save As...**, and save as `config.js`.
+   - Set both `apiKey` values under `MMM-MediaBackground` to match `API_KEY` in `.env`, and fill in your Google Calendar, Google Sheets, and OpenWeatherMap details.
+4. **Create & start the project in Container Manager**:
+   - Open **Container Manager > Project > Create**.
+   - Set **Project name** to `photoframe`, **Path** to `/docker/photoframe`, and **Source** to **Use existing docker-compose.yml**.
+   - Finish the wizard with **Start the project once it is created** checked.
 
-## Common commands
+Open `http://<nas-ip>:8036` in any browser (or point `client/config.conf` on the Raspberry Pi to `<nas-ip>`). `magicmirror/config/` is mounted as a directory and watched with `server:watch`, so edits to `config.js` or `custom.css` in **Text Editor** reload automatically on connected displays without restarting the container.
+
+## Day-to-day Management in Container Manager UI
+
+- **View logs**: **Container Manager > Container** → click `photo-api` or `magicmirror` → **Log** tab.
+- **Apply `.env` changes**: **Container Manager > Project** → select `photoframe` → **Action > Build**.
+- **Stop / Start**: **Container Manager > Project** → select `photoframe` → **Action > Stop** / **Start**.
+
+<details>
+<summary>CLI / SSH Setup & Common Commands</summary>
+
+```bash
+cd server
+cp .env.example .env && nano .env
+cp magicmirror/config/config.js.example magicmirror/config/config.js && nano magicmirror/config/config.js
+docker compose up -d --build
+```
 
 ```bash
 docker compose ps                              # Check container health
@@ -28,3 +46,4 @@ docker compose logs -f magicmirror             # Watch MagicMirror and live-relo
 docker compose exec photo-api curl -X POST -H "x-api-key: <API_KEY>" http://127.0.0.1:2283/api/admin/scan
 docker compose down                            # Stop stack
 ```
+</details>
