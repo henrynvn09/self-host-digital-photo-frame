@@ -12,13 +12,12 @@ export PATH="/usr/local/bin:/var/packages/ContainerManager/target/usr/bin:/var/p
 
 STACK_DIR="${STACK_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 REPO_DIR="${REPO_DIR:-${STACK_DIR}/self-host-digital-photo-frame}"
-LOG_FILE="${STACK_DIR}/update.log"
 
 cd "${STACK_DIR}"
-exec > >(tee "${LOG_FILE}") 2>&1
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Updating photoframe stack in ${STACK_DIR}"
 
 if [[ -d "${REPO_DIR}/.git" ]]; then
+	chmod -R u+rwX "${REPO_DIR}/.git" 2>/dev/null || true
 	echo "-> Pulling latest git commits in ${REPO_DIR}..."
 	git -c safe.directory="${REPO_DIR}" -C "${REPO_DIR}" pull --ff-only
 	echo "-> Latest commit: $(git -c safe.directory="${REPO_DIR}" -C "${REPO_DIR}" log -1 --oneline)"
@@ -45,7 +44,7 @@ if [[ -f "${STACK_DIR}/.env" ]]; then
 	PUID_VAL="$(grep -E '^PUID=' "${STACK_DIR}/.env" | tail -n1 | cut -d= -f2 | tr -d '[:space:]"'\''' || true)"
 	PGID_VAL="$(grep -E '^PGID=' "${STACK_DIR}/.env" | tail -n1 | cut -d= -f2 | tr -d '[:space:]"'\''' || true)"
 	if [[ "${PUID_VAL:-}" =~ ^[0-9]+$ && "${PGID_VAL:-}" =~ ^[0-9]+$ ]]; then
-		chown -R "${PUID_VAL}:${PGID_VAL}" "${STACK_DIR}/photo-api" "${STACK_DIR}/magicmirror" "${STACK_DIR}/docker-compose.yml" "${STACK_DIR}/update-nas.sh" "${LOG_FILE}" "${REPO_DIR}" 2>/dev/null || true
+		chown -R "${PUID_VAL}:${PGID_VAL}" "${STACK_DIR}/photo-api" "${STACK_DIR}/magicmirror" "${STACK_DIR}/docker-compose.yml" "${STACK_DIR}/update-nas.sh" "${REPO_DIR}" 2>/dev/null || true
 	fi
 fi
 
