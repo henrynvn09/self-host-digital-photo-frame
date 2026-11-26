@@ -27,6 +27,11 @@ Open `http://<nas-ip>:8036` in any browser (or point `client/config.conf` on the
 - **View logs**: **Container Manager > Container** → click `photo-api` or `magicmirror` → **Log** tab.
 - **Apply `.env` changes**: **Container Manager > Project** → select `photoframe` → **Action > Build**.
 - **Stop / Start**: **Container Manager > Project** → select `photoframe` → **Action > Stop** / **Start**.
+- **One-click Git Update from DSM Web UI** (if you cloned the repo into `/volume1/docker/photoframe/self-host-digital-photo-frame`):
+  1. Open **Control Panel > Task Scheduler > Create > Scheduled Task > User-defined script**.
+  2. **General**: Task `Update Photoframe`, User **`root`**, uncheck **Enabled** (so it only runs when you click **Run**).
+  3. **Task Settings > Run command**: `bash /volume1/docker/photoframe/update-nas.sh` → click **OK**.
+  4. Anytime you want to pull the latest code and rebuild without SSH, select `Update Photoframe` and click **Run** (check progress via **Action > View Result**).
 
 <details>
 <summary>CLI / SSH Setup & Common Commands</summary>
