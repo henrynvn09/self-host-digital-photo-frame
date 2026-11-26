@@ -492,7 +492,19 @@ func decodeEXIF(path string) *exif.Exif {
 	defer f.Close()
 
 	if ext == ".heic" || ext == ".heif" {
-		return decodeHEICEXIF(f)
+		if x := decodeHEICEXIF(f); x != nil {
+			return x
+		}
+		if info, err := f.Stat(); err == nil && info.Size() > heicHeaderScanBytes {
+			tailStart := info.Size() - heicTailScanBytes
+			if tailStart < 0 {
+				tailStart = 0
+			}
+			if _, err := f.Seek(tailStart, io.SeekStart); err == nil {
+				return decodeHEICEXIF(f)
+			}
+		}
+		return nil
 	}
 	x, err := exif.Decode(f)
 	if err != nil {
@@ -501,33 +513,60 @@ func decodeEXIF(path string) *exif.Exif {
 	return x
 }
 
+const (
+	heicHeaderScanBytes = 2 * 1024 * 1024
+	heicTailScanBytes   = 1 * 1024 * 1024
+)
+
+func hasTIFFMagic(b []byte) bool {
+	if len(b) < 4 {
+		return false
+	}
+	// Little-endian "II*\x00" or big-endian "MM\x00*"
+	return (b[0] == 'I' && b[1] == 'I' && b[2] == 0x2a && b[3] == 0x00) ||
+		(b[0] == 'M' && b[1] == 'M' && b[2] == 0x00 && b[3] == 0x2a)
+}
+
 func decodeHEICEXIF(r io.Reader) *exif.Exif {
-	// Read up to 512KB of header/metadata bytes where HEIC stores the Exif item.
-	data, err := io.ReadAll(io.LimitReader(r, 512*1024))
+	// Read header/metadata bytes where HEIC stores the Exif item.
+	// Note: iPhone HEIC files also contain "Exif\x00\x00" inside the iinf/infe
+	// item-info directory before the actual Exif TIFF payload, so scan all
+	// occurrences and verify the following TIFF byte-order magic ("II*\x00" or "MM\x00*").
+	data, err := io.ReadAll(io.LimitReader(r, heicHeaderScanBytes))
 	if err != nil {
 		return nil
 	}
 	marker := []byte("Exif\x00\x00")
-	idx := bytes.Index(data, marker)
-	if idx < 0 {
-		return nil
-	}
-	payload := data[idx:]
-	// Cap APP1 segment length to 65533 bytes (max JPEG APP1 payload)
-	if len(payload) > 65533 {
-		payload = payload[:65533]
-	}
-	var jpegBuf bytes.Buffer
-	jpegBuf.Write([]byte{0xFF, 0xD8, 0xFF, 0xE1})
-	_ = binary.Write(&jpegBuf, binary.BigEndian, uint16(len(payload)+2))
-	jpegBuf.Write(payload)
-	jpegBuf.Write([]byte{0xFF, 0xD9})
+	searchFrom := 0
+	for searchFrom < len(data) {
+		rel := bytes.Index(data[searchFrom:], marker)
+		if rel < 0 {
+			break
+		}
+		idx := searchFrom + rel
+		searchFrom = idx + len(marker)
 
-	x, err := exif.Decode(&jpegBuf)
-	if err != nil {
-		return nil
+		tiffStart := idx + len(marker)
+		if !hasTIFFMagic(data[tiffStart:]) {
+			continue
+		}
+
+		payload := data[idx:]
+		// Cap APP1 segment length to 65533 bytes (max JPEG APP1 payload)
+		if len(payload) > 65533 {
+			payload = payload[:65533]
+		}
+		var jpegBuf bytes.Buffer
+		jpegBuf.Write([]byte{0xFF, 0xD8, 0xFF, 0xE1})
+		_ = binary.Write(&jpegBuf, binary.BigEndian, uint16(len(payload)+2))
+		jpegBuf.Write(payload)
+		jpegBuf.Write([]byte{0xFF, 0xD9})
+
+		if x, err := exif.Decode(&jpegBuf); err == nil && x != nil {
+			return x
+		}
 	}
-	return x
+	return nil
 }
 
 // extractEXIFDate checks DateTimeOriginal -> DateTimeDigitized (CreateDate) -> DateTime.

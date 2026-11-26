@@ -144,6 +144,21 @@ CREATE INDEX IF NOT EXISTS idx_assets_rel_path ON assets(rel_path);
 	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_assets_media_type ON assets(media_type)`); err != nil {
 		return fmt.Errorf("create media_type index: %w", err)
 	}
+
+	var userVersion int
+	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&userVersion); err != nil {
+		return fmt.Errorf("read user_version: %w", err)
+	}
+	if userVersion < 1 {
+		// Force one-time re-scan of existing HEIC/HEIF rows so fixed decodeHEICEXIF
+		// populates GPS city/state/country, DateTimeOriginal, and Orientation.
+		if _, err := s.db.Exec(`UPDATE assets SET mtime = 0 WHERE LOWER(rel_path) LIKE '%.heic' OR LOWER(rel_path) LIKE '%.heif'`); err != nil {
+			return fmt.Errorf("invalidate stale heic mtime: %w", err)
+		}
+		if _, err := s.db.Exec(`PRAGMA user_version = 1`); err != nil {
+			return fmt.Errorf("bump user_version to 1: %w", err)
+		}
+	}
 	return nil
 }
 
