@@ -8,6 +8,8 @@ SERVER_PORT=8036
 # Active display schedule (24-hour HH:MM-HH:MM)
 MONDAY_FRIDAY=16:00-20:45
 SATURDAY_SUNDAY=08:00-20:45
+# Use SATURDAY_SUNDAY hours on US federal holidays (actual & observed)
+US_HOLIDAYS=true
 
 # PIR motion sensor (BCM GPIO pin & idle minutes before screen sleep)
 PIR_GPIO_PIN=24

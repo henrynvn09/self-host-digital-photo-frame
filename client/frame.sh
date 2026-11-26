@@ -8,6 +8,7 @@ SERVER_IP="${SERVER_IP:-192.168.4.45}"
 SERVER_PORT="${SERVER_PORT:-8036}"
 MONDAY_FRIDAY="${MONDAY_FRIDAY:-16:00-20:45}"
 SATURDAY_SUNDAY="${SATURDAY_SUNDAY:-08:00-20:45}"
+US_HOLIDAYS="${US_HOLIDAYS:-true}"
 DEBUG="${DEBUG:-false}"
 TARGET_URL=""
 
@@ -24,7 +25,7 @@ load_config() {
 		source "$CONFIG_FILE"
 	fi
 	TARGET_URL="http://${SERVER_IP}:${SERVER_PORT}"
-	debug_log "Loaded config from ${CONFIG_FILE}: SERVER=${TARGET_URL}, MON_FRI=${MONDAY_FRIDAY}, SAT_SUN=${SATURDAY_SUNDAY}, DEBUG=${DEBUG}"
+	debug_log "Loaded config from ${CONFIG_FILE}: SERVER=${TARGET_URL}, MON_FRI=${MONDAY_FRIDAY}, SAT_SUN=${SATURDAY_SUNDAY}, US_HOLIDAYS=${US_HOLIDAYS}, DEBUG=${DEBUG}"
 }
 
 probe_url() {
@@ -88,11 +89,47 @@ launch_browser() {
 	exec python3 "${SCRIPT_DIR}/kiosk.py" "${TARGET_URL}"
 }
 
+# Returns 0 if the date (default: today) is a US federal holiday (actual or observed weekday).
+is_us_holiday() {
+	local m=$((10#${1:-$(date +%m)}))
+	local d=$((10#${2:-$(date +%d)}))
+	local dow=$((10#${3:-$(date +%u)})) # 1=Mon .. 7=Sun
+
+	# Fixed-date holidays (including Friday/Monday observed dates)
+	case "${m}-${d}" in
+		1-1|6-19|7-4|11-11|12-25) return 0 ;;
+	esac
+	if [[ $dow -eq 5 ]]; then
+		case "${m}-${d}" in
+			12-31|6-18|7-3|11-10|12-24) return 0 ;;
+		esac
+	elif [[ $dow -eq 1 ]]; then
+		case "${m}-${d}" in
+			1-2|6-20|7-5|11-12|12-26) return 0 ;;
+		esac
+	fi
+
+	# Floating holidays (MLK, Presidents, Memorial, Labor, Columbus, Thanksgiving)
+	if [[ $dow -eq 1 ]]; then
+		[[ $m -eq 1 && $d -ge 15 && $d -le 21 ]] && return 0  # MLK Day (3rd Mon Jan)
+		[[ $m -eq 2 && $d -ge 15 && $d -le 21 ]] && return 0  # Presidents' Day (3rd Mon Feb)
+		[[ $m -eq 5 && $d -ge 25 && $d -le 31 ]] && return 0  # Memorial Day (last Mon May)
+		[[ $m -eq 9 && $d -ge 1  && $d -le 7  ]] && return 0  # Labor Day (1st Mon Sep)
+		[[ $m -eq 10 && $d -ge 8 && $d -le 14 ]] && return 0  # Columbus Day (2nd Mon Oct)
+	elif [[ $dow -eq 4 ]]; then
+		[[ $m -eq 11 && $d -ge 22 && $d -le 28 ]] && return 0 # Thanksgiving (4th Thu Nov)
+	fi
+
+	return 1
+}
+
 in_schedule() {
 	local range="$MONDAY_FRIDAY"
 	local day_num
 	day_num=$(date +%u)
-	[[ $day_num -ge 6 ]] && range="$SATURDAY_SUNDAY"
+	if [[ $day_num -ge 6 ]] || { [[ "$US_HOLIDAYS" == "true" || "$US_HOLIDAYS" == "TRUE" ]] && is_us_holiday; }; then
+		range="$SATURDAY_SUNDAY"
+	fi
 	local on_str="${range%%-*}" off_str="${range##*-}"
 	local now_min=$((10#$(date +%H) * 60 + 10#$(date +%M)))
 	local on_min=$((10#${on_str%%:*} * 60 + 10#${on_str##*:}))
@@ -126,7 +163,7 @@ run_daemon() {
 	trap 'stop_children; exit 0' INT TERM
 	local active=false
 	local last_reload=$SECONDS
-	log "Schedule daemon started (Mon-Fri ${MONDAY_FRIDAY}, Sat-Sun ${SATURDAY_SUNDAY}, server ${TARGET_URL})"
+	log "Schedule daemon started (Mon-Fri ${MONDAY_FRIDAY}, Sat-Sun/Holidays ${SATURDAY_SUNDAY}, US_HOLIDAYS=${US_HOLIDAYS}, server ${TARGET_URL})"
 	display_power off
 	while true; do
 		if (( SECONDS - last_reload >= 3600 )); then
