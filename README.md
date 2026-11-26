@@ -35,27 +35,22 @@ A lightweight, self-hosted digital photo frame for a 27-inch 2K monitor powered 
 You can set up everything directly in the **Synology DSM web interface** — no SSH or terminal required.
 
 ### Before You Start
-Open **Package Center** in DSM and make sure these two Synology packages are installed:
-- **Container Manager** (DSM 7.2+)
-- **Text Editor** (lets you edit config files right inside File Station)
+Open **Package Center** in DSM and make sure **Container Manager** (DSM 7.2+) is installed.
 
-### 1. Copy the `server/` files to your NAS
+### 1. Download & Edit `.env` on Your Computer
+*(Synology File Station / Text Editor cannot save filenames starting with a dot like `.env`, so edit the config files on your computer first, then upload them to the NAS.)*
+
 1. Download this repository as a ZIP (**Code > Download ZIP** on GitHub) and unzip it on your computer.
-2. Open **File Station** in DSM and open the `docker` shared folder.
-3. Click **Create > Create folder** and name it `photoframe` (creating `/docker/photoframe`).
-4. Open `/docker/photoframe` and upload everything inside this repo's `server/` folder (`docker-compose.yml`, `.env.example`, `photo-api/`, `magicmirror/`).
-5. Inside `/docker/photoframe`, click **Create > Create folder** again and name it `data` (this stores the photo index).
-
-### 2. Configure `.env` (NAS folders & secret key)
-1. In **File Station**, open `/docker/photoframe` and double-click `.env.example` to open it in **Text Editor**.
-2. Click **File > Save As...** and save it as `.env` in the same `/docker/photoframe` folder.
-3. Update these lines in `.env`:
+2. Open the `server/` folder, duplicate `.env.example`, and rename the copy to `.env`.
+   - **macOS**: Press `Cmd + Shift + .` in Finder to show hidden files like `.env.example`.
+   - **Windows**: Open `.env.example` in Notepad, choose **File > Save As**, set **Save as type** to **All Files (`*.*`)**, and save as `.env` (not `.env.txt`).
+3. Edit `.env` and update these lines:
    - `PHOTOS_PATH` — path to your Synology Photos folder:
      - Shared Space: `/volume1/photo`
      - Personal Space: `/volume1/homes/<your-username>/Photos`
-     *(Tip: right-click your photos folder in File Station → **Properties** → check **Location**.)*
+     *(Tip: in DSM **File Station**, right-click your photos folder → **Properties** → check **Location**.)*
    - `DATA_PATH` — set to `/volume1/docker/photoframe/data`.
-   - `API_KEY` — change to any random secret string (you will paste this same value in step 3).
+   - `API_KEY` — change to any random secret string (you will paste this same value in step 2).
    - `TZ` — set to your timezone (for example `America/Los_Angeles`).
    - `PUID` / `PGID` — keep the default `1026` / `100` (works for most Synology admin accounts).
      <details>
@@ -66,17 +61,20 @@ Open **Package Center** in DSM and make sure these two Synology packages are ins
      3. Under **Task Settings > Run command**, enter `id` and click **OK**.
      4. Select the new task, click **Run**, then click **Action > View Result** to see `uid=...` (`PUID`) and `gid=...` (`PGID`). You can delete the task afterward.
      </details>
-4. Click **File > Save**.
 
-### 3. Configure `config.js` (Calendar, To-Do, Weather & Photos)
-1. In **File Station**, open `/docker/photoframe/magicmirror/config` and double-click `config.js.example`.
-2. Click **File > Save As...** and save it as `config.js` in the same folder.
-3. Update these 4 sections in `config.js`:
+### 2. Edit `config.js` on Your Computer
+1. Open `server/magicmirror/config/`, duplicate `config.js.example`, and rename the copy to `config.js`.
+2. Open `config.js` in any text editor and update these 4 sections:
    - **Photos (`MMM-MediaBackground`)**: Replace both `"CHANGE_ME_TO_MATCH_API_KEY_IN_ENV"` values with the exact `API_KEY` from your `.env` file.
    - **Google Calendar (`calendar`)**: Replace `YOUR_GOOGLE_CALENDAR_CID_OR_ICS_URL` with your Google Calendar share link (`https://calendar.google.com/calendar/u/0?cid=...`) or `.ics` link.
    - **Google Sheets To-Do (`MMM-GoogleSheetsToDo`)**: Import [`todo-template.csv`](./server/magicmirror/config/todo-template.csv) into Google Sheets, add checkboxes (**Insert > Checkbox** on Column A), click **Share > Anyone with the link (Viewer)**, and paste the link into `spreadsheetUrl`.
    - **Weather (`MMM-OpenWeatherMapForecast`)**: Fill in your OpenWeatherMap `apikey`, `latitude`, and `longitude`.
-4. Click **File > Save**.
+
+### 3. Upload `server/` to Your NAS in File Station
+1. Open **File Station** in DSM and open the `docker` shared folder.
+2. Click **Create > Create folder** and name it `photoframe` (creating `/docker/photoframe`).
+3. Open `/docker/photoframe` and upload everything inside your edited `server/` folder (`docker-compose.yml`, `.env`, `photo-api/`, `magicmirror/`).
+4. Inside `/docker/photoframe`, click **Create > Create folder** again and name it `data` (this stores the photo index).
 
 ### 4. Start the Stack in Container Manager
 1. Open **Container Manager** from the DSM Main Menu.

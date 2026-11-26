@@ -4,24 +4,23 @@ Runs `photo-api` (pure-Go 2K photo indexer and 1 GB LRU cache on internal port `
 
 ## Setup via Synology DSM UI (No SSH Needed)
 
-Make sure **Container Manager** (DSM 7.2+) and **Text Editor** are installed from **Package Center**.
+Make sure **Container Manager** (DSM 7.2+) is installed from **Package Center**.
 
-1. **Upload files in File Station**:
-   - Create `/docker/photoframe` and upload all files from this `server/` folder into it.
+1. **Prepare `.env` and `config.js` on your computer** *(DSM Text Editor cannot save filenames starting with `.` like `.env`)*:
+   - Duplicate `server/.env.example` → `server/.env` (macOS: press `Cmd + Shift + .` to show dotfiles; Windows Notepad: set **Save as type** to **All Files** so it saves as `.env`).
+     - Set `PHOTOS_PATH` (`/volume1/photo` for Shared Space or `/volume1/homes/<username>/Photos` for Personal Space), `DATA_PATH` (`/volume1/docker/photoframe/data`), `TZ`, and a secret `API_KEY`.
+     - Keep `PUID=1026` and `PGID=100` (default for most Synology admin accounts; verify without SSH via **Control Panel > Task Scheduler > User-defined script** running `id`).
+   - Duplicate `server/magicmirror/config/config.js.example` → `server/magicmirror/config/config.js`.
+     - Set both `apiKey` values under `MMM-MediaBackground` to match `API_KEY` in `.env`, and fill in your Google Calendar, Google Sheets, and OpenWeatherMap details.
+2. **Upload files in File Station**:
+   - Create `/docker/photoframe` and upload everything from your edited `server/` folder (including `.env` and `config.js`) into it.
    - Create an empty `/docker/photoframe/data` folder for the SQLite index.
-2. **Create `.env` in Text Editor**:
-   - Open `/docker/photoframe/.env.example`, click **File > Save As...**, and save as `.env`.
-   - Set `PHOTOS_PATH` (`/volume1/photo` for Shared Space or `/volume1/homes/<username>/Photos` for Personal Space), `DATA_PATH` (`/volume1/docker/photoframe/data`), `TZ`, and a secret `API_KEY`.
-   - Keep `PUID=1026` and `PGID=100` (the default for most Synology admin accounts; if needed, verify via **Control Panel > Task Scheduler > User-defined script** running `id`).
-3. **Create `config.js` in Text Editor**:
-   - Open `/docker/photoframe/magicmirror/config/config.js.example`, click **File > Save As...**, and save as `config.js`.
-   - Set both `apiKey` values under `MMM-MediaBackground` to match `API_KEY` in `.env`, and fill in your Google Calendar, Google Sheets, and OpenWeatherMap details.
-4. **Create & start the project in Container Manager**:
+3. **Create & start the project in Container Manager**:
    - Open **Container Manager > Project > Create**.
    - Set **Project name** to `photoframe`, **Path** to `/docker/photoframe`, and **Source** to **Use existing docker-compose.yml**.
    - Finish the wizard with **Start the project once it is created** checked.
 
-Open `http://<nas-ip>:8036` in any browser (or point `client/config.conf` on the Raspberry Pi to `<nas-ip>`). `magicmirror/config/` is mounted as a directory and watched with `server:watch`, so edits to `config.js` or `custom.css` in **Text Editor** reload automatically on connected displays without restarting the container.
+Open `http://<nas-ip>:8036` in any browser (or point `client/config.conf` on the Raspberry Pi to `<nas-ip>`). `magicmirror/config/` is mounted as a directory and watched with `server:watch`, so later edits to `config.js` or `custom.css` reload automatically on connected displays without restarting the container.
 
 ## Day-to-day Management in Container Manager UI
 
